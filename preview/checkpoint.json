@@ -1,0 +1,13 @@
+{
+  "vocab_size": 11,
+  "d_layers": [
+    32,
+    64,
+    64,
+    64
+  ],
+  "kappa": 0.3,
+  "alpha": 0.9,
+  "epsilon_min": 0.0001,
+  "max_drive": 5.0
+}
