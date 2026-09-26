@@ -1,8 +1,11 @@
+<img width="1200" height="209" alt="Header" src="https://github.com/user-attachments/assets/46839a92-abe8-4ebd-b980-b3746b22f656" />
+
+
 # pyFERN
 
 `pyFERN` is a lightweight Python/PyTorch library implementing **FERN 1.0 (Evergreen)**: an autoregressive language model architecture combining hierarchical predictive coding with Multi-Head Vector Linear Attention (VLA).
 
-Instead of an expanding Key-Value (KV) cache, the model maintains context in fixed-size recurrent state matrices. Memory consumption remains strictly constant at $\mathcal{O}(1)$ per step regardless of context length, completely eliminating Out-Of-Memory (OOM) failures during long conversations.
+Instead of an expanding Key-Value (KV) cache, the model maintains context in fixed-size recurrent state matrices. Memory consumption remains strictly constant at O(1) per step regardless of context length, completely eliminating Out-Of-Memory (OOM) failures during long conversations.
 
 ## Installation
 
