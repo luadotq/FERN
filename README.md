@@ -36,7 +36,7 @@ from pyFERN import from_pretrained, load_tokenizer
 tokenizer = load_tokenizer("tokenizer.json")
 model = from_pretrained("checkpoints/model.safetensors")
 
-# Autoregressive generation with constant O(1) memory
+# Generate
 prompt_ids = tokenizer.encode("Once upon a time").ids
 gen_ids = model.generate(
     prompt_ids,
@@ -56,7 +56,7 @@ from pyFERN import ModelConfig, TrainingConfig, FERNModel, FERNTrainer
 model = FERNModel(ModelConfig(vocab_size=1000))
 trainer = FERNTrainer(model, TrainingConfig(lr=1e-3, batch_size=4, seq_len=64))
 
-# Train over streaming token data
+# Train over token data
 trainer.train(
     tokens="data/dataset.json",
     save_path="checkpoints/my_model.safetensors",
