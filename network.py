@@ -31,6 +31,7 @@ class FERNBlock(nn.Module):
             rms_eps=config.rms_eps,
             gamma_min=config.gamma_min,
             gamma_max=config.gamma_max,
+            chunk_size=getattr(config, "chunk_size", 64),
         )
         mlp_dim = int(d_model * 2.5)
         self.w_up = nn.Linear(d_model, mlp_dim, bias=False)
@@ -117,6 +118,7 @@ class FERNModel(nn.Module):
                 rms_eps=config.rms_eps,
                 gamma_min=config.gamma_min,
                 gamma_max=config.gamma_max,
+                chunk_size=getattr(config, "chunk_size", 64),
             )
             self.decoder = nn.Linear(total_belief_dim + d_mem, config.vocab_size)
             self._reset_parameters()
@@ -160,8 +162,13 @@ class FERNModel(nn.Module):
         if self.is_deep:
             h = self.encoder(tokens)
             total_fe = torch.zeros((), device=tokens.device, dtype=h.dtype)
+            use_ckpt = self.training and getattr(self.config, "gradient_checkpointing", False)
             for block in self.blocks:
-                h, fe_l = block.forward_parallel(h)
+                if use_ckpt:
+                    import torch.utils.checkpoint as cp
+                    h, fe_l = cp.checkpoint(block.forward_parallel, h, use_reentrant=False)
+                else:
+                    h, fe_l = block.forward_parallel(h)
                 total_fe = total_fe + fe_l
             avg_fe = total_fe / len(self.blocks)
             logits = self.decoder(rms_norm(h, eps))

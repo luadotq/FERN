@@ -27,6 +27,10 @@ class ModelConfig:
     init_range: float = 0.02
     fe_weight: float = 0.1
 
+    # Chunkwise Attention & Scaling
+    chunk_size: int = 64
+    gradient_checkpointing: bool = False
+
     # Special token IDs
     pad_token_id: int = 0
     bos_token_id: int = 2
@@ -64,11 +68,24 @@ class TrainingConfig:
     seed: int = 42
 
     device: Optional[str] = None
-    mixed_precision: str = "no"  # "no", "fp16", "bf16"
+    mixed_precision: str = "no"
     use_deepspeed: bool = False
     zero_stage: int = 2
     deepspeed_config: Optional[Union[str, Dict[str, Any]]] = None
     distributed_backend: str = "nccl"
+
+    # Checkpointing (steps / time)
+    save_interval_steps: Optional[int] = None
+    save_interval_seconds: Optional[int] = None
+    checkpoint_dir: str = "checkpoints"
+    max_checkpoints_to_keep: int = 3
+    resume_from_checkpoint: Optional[str] = None
+
+    # Hugging Face Hub
+    hf_repo_id: Optional[str] = None
+    hf_private: bool = True
+    hf_token: Optional[str] = None
+    hf_push_on_save: bool = False
 
     @classmethod
     def from_json(cls, path: str) -> "TrainingConfig":

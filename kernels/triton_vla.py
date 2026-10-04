@@ -75,17 +75,83 @@ if HAS_TRITON:
         tl.store(out_ptrs, acc.to(Out_ptr.dtype.element_ty), mask=q_mask)
 
 
+def chunkwise_vla(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    gammas: torch.Tensor,
+    scale: Optional[float] = None,
+    chunk_size: int = 64,
+) -> torch.Tensor:
+    b, h, s, d = q.shape
+    scale = scale or (1.0 / math.sqrt(d))
+    device, dtype = q.device, q.dtype
+
+    if s <= chunk_size:
+        return pytorch_vla_reference(q, k, v, gammas, scale)
+
+    C = chunk_size
+    pad_len = (C - (s % C)) % C
+    if pad_len > 0:
+        q_p = F.pad(q, (0, 0, 0, pad_len))
+        k_p = F.pad(k, (0, 0, 0, pad_len))
+        v_p = F.pad(v, (0, 0, 0, pad_len))
+    else:
+        q_p, k_p, v_p = q, k, v
+
+    s_p = s + pad_len
+    nc = s_p // C
+
+    q_c = q_p.view(b, h, nc, C, d)
+    k_c = k_p.view(b, h, nc, C, d)
+    v_c = v_p.view(b, h, nc, C, d)
+
+    steps = torch.arange(C, device=device, dtype=torch.float32)
+    diff = steps.unsqueeze(1) - steps.unsqueeze(0)
+    causal = diff >= 0
+    intra_decay = torch.where(
+        causal.view(1, 1, 1, C, C),
+        gammas.view(1, h, 1, 1, 1) ** diff.view(1, 1, 1, C, C),
+        torch.zeros(1, 1, 1, C, C, device=device, dtype=torch.float32)
+    ).to(dtype)
+
+    scores = torch.matmul(q_c, k_c.transpose(-2, -1)) * scale
+    o_intra = torch.matmul(scores * intra_decay, v_c)
+
+    decay_k = (gammas.view(1, h, 1, 1, 1) ** (C - 1 - steps).view(1, 1, 1, C, 1)).to(dtype)
+    k_decayed = k_c * decay_k
+    kv_chunk = torch.matmul(k_decayed.transpose(-2, -1), v_c)
+
+    decay_chunk = (gammas.view(1, h, 1, 1, 1) ** C).to(dtype)
+    decay_q = ((gammas.view(1, h, 1, 1, 1) ** (steps + 1).view(1, 1, 1, C, 1)) * scale).to(dtype)
+    q_decayed = q_c * decay_q
+
+    states = []
+    curr_state = torch.zeros(b, h, 1, d, d, device=device, dtype=dtype)
+    for i in range(nc):
+        states.append(curr_state)
+        curr_state = curr_state * decay_chunk + kv_chunk[:, :, i : i + 1]
+    states = torch.cat(states, dim=2)
+
+    o_inter = torch.matmul(q_decayed, states)
+    out = (o_intra + o_inter).view(b, h, s_p, d)
+    if pad_len > 0:
+        out = out[:, :, :s, :]
+    return out
+
+
 def triton_vla_forward(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     gammas: torch.Tensor,
     scale: Optional[float] = None,
+    chunk_size: int = 64,
 ) -> torch.Tensor:
     b, h, s, d = q.shape
     scale = scale or (1.0 / math.sqrt(d))
 
-    if HAS_TRITON and q.is_cuda and k.is_cuda and v.is_cuda:
+    if HAS_TRITON and q.is_cuda and k.is_cuda and v.is_cuda and not (q.requires_grad or k.requires_grad or v.requires_grad):
         out = torch.empty_like(v)
         BLOCK_M = 32 if s >= 32 else 16
         BLOCK_N = 32 if s >= 32 else 16
@@ -103,7 +169,7 @@ def triton_vla_forward(
         )
         return out
     else:
-        return pytorch_vla_reference(q, k, v, gammas, scale)
+        return chunkwise_vla(q, k, v, gammas, scale=scale, chunk_size=chunk_size)
 
 
 def pytorch_vla_reference(
@@ -121,7 +187,6 @@ def pytorch_vla_reference(
     diff = steps.unsqueeze(1) - steps.unsqueeze(0)
     causal = diff >= 0
 
-    # Shape: [1, H, S, S]
     gamma_exp = gammas.view(1, h, 1, 1) ** diff.view(1, 1, s, s)
     decay_mask = torch.where(causal.view(1, 1, s, s), gamma_exp, torch.zeros((), device=device, dtype=torch.float32)).to(dtype)
 

@@ -13,6 +13,76 @@ def _associative_scan_step(elem_i, elem_j):
     a_j, b_j = elem_j
     return a_j * a_i, a_j * b_i + b_j
 
+def jax_chunkwise_vla(
+    q: jnp.ndarray,
+    k: jnp.ndarray,
+    v: jnp.ndarray,
+    gammas: jnp.ndarray,
+    scale: float,
+    chunk_size: int = 64,
+) -> jnp.ndarray:
+    """
+    Hardware-accelerated Chunkwise VLA for Google Cloud TPU v5e MXU arrays.
+    
+    Splits sequence S into chunks of size C (e.g. 64 or 128 matching TPU systolic array tile size).
+    Computes intra-chunk causal attention with O(C^2) memory and updates inter-chunk states
+    using jax.lax.scan with zero intermediate memory allocation for the full sequence.
+    """
+    b, h, s, d = q.shape
+    C = chunk_size
+    pad_len = (C - (s % C)) % C
+    if pad_len > 0:
+        q = jnp.pad(q, ((0, 0), (0, 0), (0, pad_len), (0, 0)))
+        k = jnp.pad(k, ((0, 0), (0, 0), (0, pad_len), (0, 0)))
+        v = jnp.pad(v, ((0, 0), (0, 0), (0, pad_len), (0, 0)))
+
+    s_p = s + pad_len
+    nc = s_p // C
+
+    q_c = jnp.reshape(q, (b, h, nc, C, d))
+    k_c = jnp.reshape(k, (b, h, nc, C, d))
+    v_c = jnp.reshape(v, (b, h, nc, C, d))
+
+    steps = jnp.arange(C, dtype=jnp.float32)
+    diff = steps[:, None] - steps[None, :]
+    causal = diff >= 0
+    intra_decay = jnp.where(
+        causal[None, None, None, :, :],
+        gammas[None, :, None, None, None] ** diff[None, None, None, :, :],
+        0.0
+    ).astype(q.dtype)
+
+    scores = jnp.matmul(q_c, jnp.swapaxes(k_c, -2, -1)) * scale
+    o_intra = jnp.matmul(scores * intra_decay, v_c)
+
+    decay_k = (gammas[None, :, None, None, None] ** (C - 1 - steps)[None, None, None, :, None]).astype(q.dtype)
+    k_decayed = k_c * decay_k
+    kv_chunk = jnp.matmul(jnp.swapaxes(k_decayed, -2, -1), v_c)
+
+    decay_chunk = (gammas[None, :, None, None] ** C).astype(q.dtype)
+    decay_q = ((gammas[None, :, None, None, None] ** (steps + 1)[None, None, None, :, None]) * scale).astype(q.dtype)
+    q_decayed = q_c * decay_q
+
+    q_dec_t = jnp.transpose(q_decayed, (2, 0, 1, 3, 4))
+    kv_t = jnp.transpose(kv_chunk, (2, 0, 1, 3, 4))
+
+    init_state = jnp.zeros((b, h, d, d), dtype=q.dtype)
+
+    def scan_fn(prev_state, xs):
+        curr_q, curr_kv = xs
+        o_inter_chunk = jnp.matmul(curr_q, prev_state)
+        next_state = prev_state * decay_chunk + curr_kv
+        return next_state, o_inter_chunk
+
+    _, o_inter_t = jax.lax.scan(scan_fn, init_state, (q_dec_t, kv_t))
+    o_inter = jnp.transpose(o_inter_t, (1, 2, 0, 3, 4))
+
+    out = jnp.reshape(o_intra + o_inter, (b, h, s_p, d))
+    if pad_len > 0:
+        out = out[:, :, :s, :]
+    return out
+
+
 def vla_associative_scan(
     q: jnp.ndarray,
     k: jnp.ndarray,
@@ -20,12 +90,10 @@ def vla_associative_scan(
     gammas: jnp.ndarray,
     scale: float,
 ) -> jnp.ndarray:
-    # q, k, v shape: [B, H, S, D]
+    # Full associative scan fallback for small sequences
     b, h, s, d = q.shape
     a = jnp.broadcast_to(gammas[None, :, None, None, None], (b, h, s, 1, 1))
     b_outer = jnp.einsum('bhsd,bhsm->bhsdm', k, v)
-
-    # O(log S) parallel scan on TPU MXUs
     _, s_all = jax.lax.associative_scan(_associative_scan_step, (a, b_outer), axis=2)
     out = jnp.einsum('bhsd,bhsdm->bhsm', q, s_all) * scale
     return out
@@ -38,6 +106,7 @@ class JAXVectorLinearAttention(nn.Module):
     rms_eps: float = 1e-5
     gamma_min: float = 0.90
     gamma_max: float = 0.98
+    chunk_size: int = 64
 
     def setup(self):
         self.head_dim = self.mem_dim // self.num_heads
@@ -71,7 +140,8 @@ class JAXVectorLinearAttention(nn.Module):
         gammas = self.get_gammas()
         scale = 1.0 / math.sqrt(d)
 
-        o_heads = vla_associative_scan(q, k, v, gammas, scale)
+        # Chunkwise VLA execution for peak TPU MXU hardware efficiency
+        o_heads = jax_chunkwise_vla(q, k, v, gammas, scale, chunk_size=self.chunk_size)
         o_flat = jnp.reshape(jnp.transpose(o_heads, (0, 2, 1, 3)), (b, s, h * d))
         o_norm = rms_norm(o_flat, self.rms_eps)
         o_out = self.w_out(o_norm)

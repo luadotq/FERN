@@ -3,7 +3,7 @@ from typing import Tuple, Optional
 import torch
 import torch.nn as nn
 from .layers import rms_norm
-from .kernels import triton_vla_forward
+from .kernels import triton_vla_forward, chunkwise_vla
 
 class VectorLinearAttention(nn.Module):
     def __init__(
@@ -14,6 +14,7 @@ class VectorLinearAttention(nn.Module):
         rms_eps: float = 1e-5,
         gamma_min: float = 0.90,
         gamma_max: float = 0.98,
+        chunk_size: int = 64,
     ):
         super().__init__()
         self.num_heads = max(num_heads, 1)
@@ -22,6 +23,7 @@ class VectorLinearAttention(nn.Module):
         self.rms_eps = rms_eps
         self.gamma_min = gamma_min
         self.gamma_max = gamma_max
+        self.chunk_size = chunk_size
 
         self.w_q = nn.Linear(in_dim, mem_dim)
         self.w_k = nn.Linear(in_dim, mem_dim)
@@ -54,8 +56,8 @@ class VectorLinearAttention(nn.Module):
         gammas = self.get_head_gammas(device=device)
         scale = 1.0 / math.sqrt(d)
 
-        # Fused decayed attention (Triton kernel on CUDA, vector reference on CPU)
-        o_heads = triton_vla_forward(q, k, v, gammas, scale=scale)
+        # Chunkwise decayed attention
+        o_heads = triton_vla_forward(q, k, v, gammas, scale=scale, chunk_size=self.chunk_size)
         o_flat = o_heads.transpose(1, 2).contiguous().view(b, s, h * d)
         o_norm = rms_norm(o_flat, self.rms_eps)
         o_out = self.w_out(o_norm)
