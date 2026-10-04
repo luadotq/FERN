@@ -112,9 +112,7 @@ class JAXFERNTrainer:
     ):
         def loss_fn(params):
             logits, avg_fe = model.apply({"params": params}, inputs, method=model.forward_parallel)
-            one_hot = jax.nn.one_hot(targets, vocab_size)
-            log_probs = jax.nn.log_softmax(logits)
-            ce_loss = -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
+            ce_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets))
             total_loss = ce_loss + fe_weight * avg_fe
             return total_loss, (ce_loss, avg_fe)
 
@@ -133,9 +131,7 @@ class JAXFERNTrainer:
         vocab_size: int,
     ):
         logits, avg_fe = model.apply({"params": params}, inputs, method=model.forward_parallel)
-        one_hot = jax.nn.one_hot(targets, vocab_size)
-        log_probs = jax.nn.log_softmax(logits)
-        ce_loss = -jnp.mean(jnp.sum(one_hot * log_probs, axis=-1))
+        ce_loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits=logits, labels=targets))
         total_loss = ce_loss + fe_weight * avg_fe
         return total_loss, ce_loss, avg_fe
 
