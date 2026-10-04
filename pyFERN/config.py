@@ -87,6 +87,19 @@ class TrainingConfig:
     hf_token: Optional[str] = None
     hf_push_on_save: bool = False
 
+    # Telegram & Monitoring
+    telegram_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    telegram_interval: int = 100
+
+    # Validation & Metrics
+    val_interval_steps: Optional[int] = None
+    val_steps: int = 50
+    bytes_per_token: float = 3.8
+
+    # Dynamic Streaming
+    sliding_window_shards: int = 2
+
     @classmethod
     def from_json(cls, path: str) -> "TrainingConfig":
         with open(path, "r", encoding="utf-8") as f:

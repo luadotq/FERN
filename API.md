@@ -70,6 +70,20 @@ Dataclass specifying training hyperparameters, optimization settings, and hardwa
 | `mixed_precision` | `str` | `"no"` | Precision mode: `"no"`, `"fp16"`, or `"bf16"`. |
 | `use_deepspeed` | `bool` | `False` | Enable DeepSpeed ZeRO distributed engine. |
 | `zero_stage` | `int` | `2` | DeepSpeed ZeRO stage (`1`, `2`, or `3`). |
+| `save_interval_steps` | `Optional[int]` | `None` | Save checkpoint every N steps. |
+| `save_interval_seconds` | `Optional[float]` | `None` | Save checkpoint every N seconds (e.g. time-based). |
+| `checkpoint_dir` | `str` | `"checkpoints"` | Directory for periodic and emergency checkpoints. |
+| `max_checkpoints_to_keep` | `int` | `3` | Maximum recent checkpoints to retain on disk. |
+| `resume_from_checkpoint` | `Optional[str]` | `None` | Path or `"latest"` to resume model and optimizer state. |
+| `hf_repo_id` | `Optional[str]` | `None` | Hugging Face Hub repository ID (`username/repo`). |
+| `hf_private` | `bool` | `True` | Set Hugging Face repository visibility to private. |
+| `hf_push_on_save` | `bool` | `False` | Automatically push each periodic checkpoint to HF Hub. |
+| `telegram_token` | `Optional[str]` | `None` | Telegram bot token for live monitoring and remote control. |
+| `telegram_chat_id` | `Optional[str]` | `None` | Authorized Telegram chat ID. |
+| `val_interval_steps` | `Optional[int]` | `None` | Interval in steps for evaluation (CE, FE, PPL, BPB). |
+| `val_steps` | `int` | `50` | Number of batches per validation pass. |
+| `bytes_per_token` | `float` | `3.5` | Average byte length per token for BPB calculation. |
+| `sliding_window_shards` | `int` | `2` | Maximum concurrent local shards kept in disk cache. |
 
 #### Methods
 
@@ -213,9 +227,9 @@ def load_tokenizer(path: str = "tokenizer.json") -> Tokenizer:
 
 Loads a Hugging Face `tokenizers.Tokenizer` from a file path or directory.
 
-## 6. Training (`pyFERN.trainer`)
+## 6. Training (`pyFERN.trainer`, `pyFERN.jax.trainer`)
 
-### `FERNTrainer`
+### `FERNTrainer` (PyTorch)
 
 ```python
 from pyFERN import FERNTrainer, TrainingConfig
@@ -225,11 +239,95 @@ from pyFERN import FERNTrainer, TrainingConfig
 
 - **`__init__(model: FERNModel, config: Optional[TrainingConfig] = None, **kwargs)`**
 - **`train_step(inputs: torch.Tensor, targets: torch.Tensor) -> Tuple[float, float, float]`**  
-  Executes a single forward-backward pass and returns `(total_loss, ce_loss, fe_loss)`.
-- **`train(tokens: Union[str, List[int], torch.Tensor], save_path: Optional[str] = None, eval_prompt: Optional[str] = None, tokenizer = None)`**  
-  Trains the model over continuous streaming token sequence. `tokens` can be a path to a JSON file, a Python list, a NumPy array, or a PyTorch tensor.
+  Executes forward-backward step and returns `(total_loss, ce_loss, fe_loss)`.
+- **`evaluate(val_dataset, val_steps: int = 50) -> Tuple[float, float, float, float, float]`**  
+  Evaluates model on validation data; returns `(loss, ce_loss, fe_loss, ppl, bpb)`.
+- **`train(tokens, save_path: Optional[str] = None, eval_prompt: Optional[str] = None, tokenizer = None)`**  
+  Runs optimization loop with time/step checkpoints, validation, telemetry, and emergency handling. Accepts tokens, `PretokenizedDataset`, `SlidingShardLoader`, or Hugging Face dataset repo IDs.
 
-## 7. Hardware & Distributed Backends (`pyFERN.kernels`, `pyFERN.distributed`)
+### `JAXFERNTrainer` (JAX / TPU)
+
+```python
+from pyFERN.jax.trainer import JAXFERNTrainer
+```
+
+High-performance TPU and GPU trainer utilizing `jax.jit`, `optax.adamw`, and TPU mesh data sharding.
+- Persists Optax optimizer state (`opt_state.flax`) and model weights (`model.safetensors`).
+- Seamless resumption with full optimizer momentum/variance restoration.
+- Native validation loop computing CE, Free Energy, PPL, and BPB.
+
+---
+
+## 7. Streaming & Dynamic Shard Management (`pyFERN.streaming`)
+
+### `SlidingShardLoader`
+
+```python
+from pyFERN import SlidingShardLoader
+```
+
+Sliding-window dataset streaming designed for limited disk environments (e.g. Kaggle 50 GB disk with 40+ GB datasets).
+
+#### Constructor Arguments
+
+```python
+loader = SlidingShardLoader(
+    dataset_path_or_repo="username/my-dataset",
+    cache_dir="/tmp/fern_shards",
+    batch_size=16,
+    seq_len=2048,
+    window_size=2,
+    val_ratio=0.05,
+    hf_token=None,
+    infinite=True,
+)
+```
+
+- **Features**:
+  - Automatically fetches `metadata.json` and splits shards into training and validation sets (`loader.val_dataset`).
+  - Maintains a bounded background prefetch queue of at most `window_size` local shards (~400–600 MB).
+  - Automatically unlinks consumed `.bin` shards from disk immediately (`os.remove()`).
+
+---
+
+## 8. Telemetry, Monitoring & Emergency Protection (`pyFERN.telemetry`)
+
+### `TelegramMonitor`
+
+```python
+from pyFERN import TelegramMonitor, TrainingControl
+```
+
+Minimalist remote control bot running in a background daemon thread with zero external Telegram dependencies (pure standard library HTTP).
+
+#### Commands
+
+- **`/status`**: Prints step, progress %, loss, CE/FE loss, validation PPL/BPB, learning rate, speed (tok/s), ETA, and remaining disk space.
+- **`/plot`**: Generates and sends a 4-panel publication-quality training curve chart (CE Loss, Val PPL/BPB, Free Energy, Learning Rate).
+- **`/val`**: Triggers immediate validation step.
+- **`/save`**: Saves checkpoint and uploads to Hugging Face Hub immediately.
+- **`/stop`**: Gracefully stops training and saves final checkpoint.
+- **`/lr <val>`**: Dynamically updates optimizer learning rate during training.
+
+### `MetricsLogger`
+
+```python
+from pyFERN import MetricsLogger
+```
+
+Logs step-by-step training and validation records to `metrics.csv` and `metrics.jsonl`. Automatically uploaded to Hugging Face Hub on each checkpoint save.
+
+### `setup_emergency_handler`
+
+```python
+from pyFERN import setup_emergency_handler
+```
+
+Catches `SIGTERM`, `SIGINT`, and `SIGHUP` signals (common in cloud spot instances and Kaggle session timeouts), saving a full model and optimizer checkpoint with Hugging Face upload before exiting.
+
+---
+
+## 9. Hardware & Distributed Backends (`pyFERN.kernels`, `pyFERN.distributed`)
 
 ### `triton_vla_forward` & `HAS_TRITON`
 
@@ -237,38 +335,49 @@ from pyFERN import FERNTrainer, TrainingConfig
 from pyFERN.kernels import triton_vla_forward, HAS_TRITON
 ```
 
-
 ### `setup_distributed_engine`
 
 ```python
 from pyFERN.distributed import setup_distributed_engine, is_main_process
 ```
 
+---
 
-## 8. Command Line Interface (CLI)
+## 10. Command Line Interface (CLI)
 
 The package provides the `pyfern` command:
 
 ```bash
-# Check hardware acceleration and system capabilities
+# Check hardware accelerators and libraries
 pyfern info
 
 # Generate text from a checkpoint
 pyfern generate \
-  --checkpoint checkpoints/model.safetensors \
-  --tokenizer tokenizer.json \
-  --prompt "Once upon a time" \
-  --max-tokens 32 \
-  --temperature 0.7 \
-  --device cpu
+  --checkpoint checkpoints/step_0010000 \
+  --prompt "Predictive coding"
 
-# Train on a tokenized dataset
+# Train with PyTorch
 pyfern train \
-  --data data/data.json \
-  --config config.json \
-  --save-path checkpoints/trained_model.safetensors \
-  --steps 200 \
-  --batch-size 4 \
-  --seq-len 64 \
-  --lr 0.001
+  --data "user/dataset-shards" \
+  --config configs/fern_250m.json \
+  --steps 200000 \
+  --save-interval-minutes 60 \
+  --val-interval-steps 1000 \
+  --hf-repo-id "user/fern-checkpoints" \
+  --telegram-token "$TG_TOKEN" \
+  --telegram-chat-id "$TG_CHAT_ID"
+
+# Train with JAX on TPU
+pyfern train-jax \
+  --data "user/dataset-shards" \
+  --config configs/fern_250m.json \
+  --steps 200000 \
+  --batch-size 32 \
+  --seq-len 2048 \
+  --sliding-window 2 \
+  --save-interval-minutes 60 \
+  --val-interval-steps 1000 \
+  --hf-repo-id "user/fern-checkpoints" \
+  --telegram-token "$TG_TOKEN" \
+  --telegram-chat-id "$TG_CHAT_ID"
 ```

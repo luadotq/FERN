@@ -18,6 +18,8 @@ from .data import PretokenizedDataset, JAXDataIterator, prepare_pretokenized_dat
 from .trainer import FERNTrainer
 from .distributed import init_distributed, get_deepspeed_config, setup_distributed_engine
 from .kernels import triton_vla_forward, chunkwise_vla, HAS_TRITON
+from .telemetry import TelegramMonitor, MetricsLogger, TrainingControl, setup_emergency_handler
+from .streaming import SlidingShardLoader
 
 __all__ = [
     "ModelConfig",
@@ -52,4 +54,9 @@ __all__ = [
     "triton_vla_forward",
     "chunkwise_vla",
     "HAS_TRITON",
+    "TelegramMonitor",
+    "MetricsLogger",
+    "TrainingControl",
+    "setup_emergency_handler",
+    "SlidingShardLoader",
 ]

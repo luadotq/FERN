@@ -15,7 +15,7 @@ class PretokenizedDataset:
         world_size: int = 1,
     ):
         # Auto-detect dtype from metadata.json if in directory
-        if os.path.isdir(path_or_pattern):
+        if isinstance(path_or_pattern, str) and os.path.isdir(path_or_pattern):
             meta_file = os.path.join(path_or_pattern, "metadata.json")
             if os.path.exists(meta_file):
                 try:
@@ -32,7 +32,7 @@ class PretokenizedDataset:
         self.world_size = world_size
 
         # Resolve files
-        if os.path.isdir(path_or_pattern):
+        if isinstance(path_or_pattern, str) and os.path.isdir(path_or_pattern):
             patterns = [
                 os.path.join(path_or_pattern, "*.bin"),
                 os.path.join(path_or_pattern, "*.npy"),
@@ -45,6 +45,8 @@ class PretokenizedDataset:
                 default_bin = os.path.join(path_or_pattern, "train.bin")
                 if os.path.exists(default_bin):
                     files = [default_bin]
+        elif isinstance(path_or_pattern, (list, tuple)):
+            files = [f for f in path_or_pattern if os.path.exists(f)]
         else:
             files = sorted(glob.glob(path_or_pattern))
             if not files and os.path.exists(path_or_pattern):

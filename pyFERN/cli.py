@@ -88,8 +88,8 @@ def cli_tokenize(args):
 
 
 def cli_train(args):
-    if not os.path.exists(args.data):
-        print(f"Error: Data path not found: {args.data}")
+    if not os.path.exists(args.data) and "/" not in args.data:
+        print(f"Error: Data path or HF repo not found: {args.data}")
         sys.exit(1)
 
     if args.config:
@@ -100,6 +100,10 @@ def cli_train(args):
     else:
         cfg = ModelConfig()
 
+    save_sec = args.save_interval_seconds
+    if getattr(args, "save_interval_minutes", None):
+        save_sec = args.save_interval_minutes * 60
+
     train_cfg = TrainingConfig(
         batch_size=args.batch_size,
         seq_len=args.seq_len,
@@ -108,7 +112,7 @@ def cli_train(args):
         log_interval=args.log_interval,
         device=args.device,
         save_interval_steps=args.save_interval_steps,
-        save_interval_seconds=args.save_interval_seconds,
+        save_interval_seconds=save_sec,
         checkpoint_dir=args.checkpoint_dir,
         max_checkpoints_to_keep=args.max_checkpoints,
         resume_from_checkpoint=args.resume,
@@ -116,6 +120,11 @@ def cli_train(args):
         hf_private=args.hf_private,
         hf_token=args.hf_token,
         hf_push_on_save=args.hf_push_on_save,
+        telegram_token=getattr(args, "telegram_token", None),
+        telegram_chat_id=getattr(args, "telegram_chat_id", None),
+        val_interval_steps=getattr(args, "val_interval_steps", None),
+        val_steps=getattr(args, "val_steps", 50),
+        sliding_window_shards=getattr(args, "sliding_window", 2),
     )
 
     model = FERNModel(cfg)
@@ -133,8 +142,8 @@ def cli_train_jax(args):
         print("Error: JAX is not installed. Please install JAX and Flax for TPU training.")
         sys.exit(1)
 
-    if not os.path.exists(args.data):
-        print(f"Error: Data path not found: {args.data}")
+    if not os.path.exists(args.data) and "/" not in args.data:
+        print(f"Error: Data path or HF repo not found: {args.data}")
         sys.exit(1)
 
     if args.config:
@@ -145,6 +154,10 @@ def cli_train_jax(args):
     else:
         cfg = ModelConfig()
 
+    save_sec = args.save_interval_seconds
+    if getattr(args, "save_interval_minutes", None):
+        save_sec = args.save_interval_minutes * 60
+
     train_cfg = TrainingConfig(
         batch_size=args.batch_size,
         seq_len=args.seq_len,
@@ -152,7 +165,7 @@ def cli_train_jax(args):
         lr=args.lr,
         log_interval=args.log_interval,
         save_interval_steps=args.save_interval_steps,
-        save_interval_seconds=args.save_interval_seconds,
+        save_interval_seconds=save_sec,
         checkpoint_dir=args.checkpoint_dir,
         max_checkpoints_to_keep=args.max_checkpoints,
         resume_from_checkpoint=args.resume,
@@ -160,6 +173,11 @@ def cli_train_jax(args):
         hf_private=args.hf_private,
         hf_token=args.hf_token,
         hf_push_on_save=args.hf_push_on_save,
+        telegram_token=getattr(args, "telegram_token", None),
+        telegram_chat_id=getattr(args, "telegram_chat_id", None),
+        val_interval_steps=getattr(args, "val_interval_steps", None),
+        val_steps=getattr(args, "val_steps", 50),
+        sliding_window_shards=getattr(args, "sliding_window", 2),
     )
 
     model = JAXFERNModel(config=cfg)
@@ -174,6 +192,7 @@ def cli_train_jax(args):
 def add_training_checkpoint_args(p):
     p.add_argument("--save-interval-steps", type=int, default=None, help="Save checkpoint every N steps")
     p.add_argument("--save-interval-seconds", type=int, default=None, help="Save checkpoint every N seconds")
+    p.add_argument("--save-interval-minutes", type=int, default=None, help="Save checkpoint every N minutes")
     p.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for periodic checkpoints")
     p.add_argument("--max-checkpoints", type=int, default=3, help="Max recent checkpoints to keep")
     p.add_argument("--resume", default=None, help="Resume training from path or 'latest'")
@@ -182,6 +201,11 @@ def add_training_checkpoint_args(p):
     p.add_argument("--hf-public", dest="hf_private", action="store_false", help="Set HF repo to public")
     p.add_argument("--hf-token", default=None, help="Hugging Face API token")
     p.add_argument("--hf-push-on-save", action="store_true", help="Push each periodic checkpoint to HF Hub")
+    p.add_argument("--telegram-token", default=None, help="Telegram bot token for monitoring")
+    p.add_argument("--telegram-chat-id", default=None, help="Telegram chat ID for monitoring")
+    p.add_argument("--val-interval-steps", type=int, default=None, help="Evaluate validation every N steps")
+    p.add_argument("--val-steps", type=int, default=50, help="Validation steps per evaluation")
+    p.add_argument("--sliding-window", type=int, default=2, help="Sliding window size for remote shard caching")
 
 
 def main():
