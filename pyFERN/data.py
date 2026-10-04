@@ -14,6 +14,18 @@ class PretokenizedDataset:
         rank: int = 0,
         world_size: int = 1,
     ):
+        # Auto-detect dtype from metadata.json if in directory
+        if os.path.isdir(path_or_pattern):
+            meta_file = os.path.join(path_or_pattern, "metadata.json")
+            if os.path.exists(meta_file):
+                try:
+                    with open(meta_file, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                        if "dtype" in meta and (dtype == np.uint16 or dtype == "uint16"):
+                            dtype = meta["dtype"]
+                except Exception:
+                    pass
+
         self.seq_len = seq_len
         self.dtype = np.dtype(dtype)
         self.rank = rank
