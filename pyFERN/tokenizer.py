@@ -62,8 +62,9 @@ class FERNTokenizer:
             return TokenList(enc.ids)
 
     def batch_encode(self, texts: List[str], add_special_tokens: bool = True) -> List[TokenList]:
-        if hasattr(self._tokenizer, "encode_batch"):
-            encs = self._tokenizer.encode_batch(texts, add_special_tokens=add_special_tokens)
+        raw = getattr(self._tokenizer, "_tokenizer", self._tokenizer)
+        if hasattr(raw, "encode_batch"):
+            encs = raw.encode_batch(texts, add_special_tokens=add_special_tokens)
             return [TokenList(enc.ids) for enc in encs]
         return [self.encode(t, add_special_tokens=add_special_tokens) for t in texts]
 
