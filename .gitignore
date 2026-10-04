@@ -1,7 +1,39 @@
-/target
+# Bytecode and builds
 __pycache__/
 *.pyc
 *.egg-info/
 build/
 dist/
 .pytest_cache/
+/target
+Cargo.lock
+Cargo.toml
+kernels/
+
+# Data and checkpoints
+checkpoints/
+data/
+*.safetensors
+*.bin
+
+# Local configs, scripts, tests, preprints
+configs/
+scripts/
+tests/
+docs/
+*.pdf
+*.aux
+*.log
+*.out
+*.toc
+fern_v10.*
+
+# Scratch and internal
+.agents/
+legacy/
+preview/
+scratch/
+uv.lock
+setup.py
+src/
+api.md
