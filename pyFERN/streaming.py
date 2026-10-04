@@ -48,12 +48,16 @@ class SlidingShardLoader:
         self.stopped = threading.Event()
         self.fetch_thread = None
 
-        if self.is_hf:
-            self.fetch_thread = threading.Thread(target=self._prefetch_loop, daemon=True)
-            self.fetch_thread.start()
-
         self.current_iter: Optional[JAXDataIterator] = None
         self.current_shard_path: Optional[str] = None
+        self.current_shard_idx: int = 0
+        self.current_shard_name: str = ""
+        self.resume_state: Optional[dict] = None
+
+    def _ensure_prefetch_started(self):
+        if self.is_hf and self.fetch_thread is None:
+            self.fetch_thread = threading.Thread(target=self._prefetch_loop, daemon=True)
+            self.fetch_thread.start()
 
     def _discover_and_split(self):
         if self.is_hf:
@@ -123,8 +127,10 @@ class SlidingShardLoader:
 
     def _prefetch_loop(self):
         from huggingface_hub import hf_hub_download
+        start_idx = self.current_shard_idx
+        train_slice = self.train_shards[start_idx:]
         while not self.stopped.is_set():
-            for shard_name in self.train_shards:
+            for idx, shard_name in enumerate(train_slice, start=start_idx):
                 if self.stopped.is_set():
                     break
                 try:
@@ -135,12 +141,14 @@ class SlidingShardLoader:
                         token=self.hf_token,
                         local_dir=self.train_dir,
                     )
-                    self.download_queue.put(local_file)
+                    self.download_queue.put((idx, shard_name, local_file))
                 except Exception as e:
                     print(f"[Prefetch Warning] Failed to download {shard_name}: {e}")
                     time.sleep(2.0)
             if not self.infinite:
                 break
+            train_slice = self.train_shards
+            start_idx = 0
         self.download_queue.put(None)
 
     def _load_next_shard(self) -> bool:
@@ -152,26 +160,55 @@ class SlidingShardLoader:
                 pass
 
         if self.is_hf:
-            shard_path = self.download_queue.get()
-            if shard_path is None:
+            self._ensure_prefetch_started()
+            item = self.download_queue.get()
+            if item is None:
                 return False
+            idx, shard_name, shard_path = item
+            self.current_shard_idx = idx
+            self.current_shard_name = shard_name
             self.current_shard_path = shard_path
             ds = PretokenizedDataset(shard_path, seq_len=self.seq_len, dtype=self.dtype)
-            self.current_iter = JAXDataIterator(ds, batch_size=self.batch_size, shuffle=True, infinite=False)
+            self.current_iter = JAXDataIterator(ds, batch_size=self.batch_size, shuffle=True, seed=42 + idx, infinite=False)
+            if self.resume_state and "sample_idx" in self.resume_state:
+                self.current_iter.pos = min(self.resume_state["sample_idx"], len(self.current_iter.indices))
+                self.resume_state = None
             return True
         else:
             if not hasattr(self, "_local_shard_idx"):
-                self._local_shard_idx = 0
+                self._local_shard_idx = self.current_shard_idx
             if self._local_shard_idx >= len(self.train_shards):
                 if not self.infinite:
                     return False
                 self._local_shard_idx = 0
-            shard_path = self.train_shards[self._local_shard_idx]
-            self._local_shard_idx += 1
+            idx = self._local_shard_idx
+            shard_path = self.train_shards[idx]
+            self.current_shard_idx = idx
+            self.current_shard_name = os.path.basename(shard_path)
             self.current_shard_path = shard_path
+            self._local_shard_idx += 1
             ds = PretokenizedDataset(shard_path, seq_len=self.seq_len, dtype=self.dtype)
-            self.current_iter = JAXDataIterator(ds, batch_size=self.batch_size, shuffle=True, infinite=False)
+            self.current_iter = JAXDataIterator(ds, batch_size=self.batch_size, shuffle=True, seed=42 + idx, infinite=False)
+            if self.resume_state and "sample_idx" in self.resume_state:
+                self.current_iter.pos = min(self.resume_state["sample_idx"], len(self.current_iter.indices))
+                self.resume_state = None
             return True
+
+    def get_state(self) -> dict:
+        sample_idx = self.current_iter.pos if self.current_iter else 0
+        return {
+            "shard_idx": self.current_shard_idx,
+            "shard_name": self.current_shard_name,
+            "sample_idx": sample_idx,
+            "token_offset": sample_idx * self.seq_len,
+        }
+
+    def set_state(self, state: dict):
+        self.resume_state = state
+        self.current_shard_idx = state.get("shard_idx", 0)
+        self.current_shard_name = state.get("shard_name", "")
+        if not self.is_hf:
+            self._local_shard_idx = self.current_shard_idx
 
     def __iter__(self) -> Iterator[Tuple[np.ndarray, np.ndarray]]:
         return self

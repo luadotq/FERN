@@ -213,9 +213,13 @@ class TelegramMonitor:
         cmd = text.split()[0].lower()
         if cmd == "/status":
             st = self.get_status_fn() if self.get_status_fn else {}
+            shard_info = ""
+            if st.get("shard_name") and st.get("shard_name") != "-":
+                shard_info = f"shard: {st.get('shard_name')} (idx {st.get('shard_idx', 0)}) | offset: {st.get('shard_offset', 0):,} tok\n"
             msg = (
                 f"step: {st.get('step', 0)}/{st.get('total_steps', 0)} ({st.get('pct', 0.0):.1f}%)\n"
                 f"tokens: {st.get('tokens_seen', 0):,}\n"
+                f"{shard_info}"
                 f"train_loss: {st.get('loss', 0.0):.4f} (ce: {st.get('ce', 0.0):.4f}, fe: {st.get('fe', 0.0):.4f})\n"
                 f"val_loss: {st.get('val_loss', '-')} | ppl: {st.get('val_ppl', '-')} | bpb: {st.get('val_bpb', '-')}\n"
                 f"lr: {st.get('lr', 0.0):.2e} | speed: {st.get('speed', 0.0):,.0f} tok/s\n"

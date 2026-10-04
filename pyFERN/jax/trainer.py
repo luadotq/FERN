@@ -246,6 +246,10 @@ class JAXFERNTrainer:
                     saved_step = t_state.get("step", 0)
                     start_step = saved_step + 1
                     cum_tok = t_state.get("tokens_seen", saved_step * n_tok)
+                    if "dataset_state" in t_state and hasattr(data_iter, "set_state"):
+                        data_iter.set_state(t_state["dataset_state"])
+                        ds_st = t_state["dataset_state"]
+                        print(f"[JAX Resume] Dataset restored: {ds_st.get('shard_name')} (shard {ds_st.get('shard_idx')}) | offset {ds_st.get('token_offset', 0):,} tok")
             print(f"[JAX Resume] Resumed from step {start_step - 1} ({cum_tok:,} tokens seen)")
 
         if cfg.hf_repo_id:
@@ -271,6 +275,7 @@ class JAXFERNTrainer:
             eta_sec = rem_tok / speed if speed > 0 else 0
             free_gb = shutil.disk_usage(cfg.checkpoint_dir)[2] / 1e9 if os.path.exists(cfg.checkpoint_dir) else 0.0
             latest = logger.get_latest()
+            ds_st = data_iter.get_state() if hasattr(data_iter, "get_state") else {}
             return {
                 "step": step,
                 "total_steps": total_steps,
@@ -287,6 +292,9 @@ class JAXFERNTrainer:
                 "elapsed_str": f"{int(elapsed // 3600)}h {int((elapsed % 3600) // 60)}m",
                 "eta_str": f"{int(eta_sec // 3600)}h {int((eta_sec % 3600) // 60)}m",
                 "free_disk_gb": free_gb,
+                "shard_name": ds_st.get("shard_name", "-"),
+                "shard_idx": ds_st.get("shard_idx", 0),
+                "shard_offset": ds_st.get("token_offset", 0),
             }
 
         bot = TelegramMonitor(
@@ -299,7 +307,10 @@ class JAXFERNTrainer:
 
         def emergency_save():
             save_dir = os.path.join(cfg.checkpoint_dir, f"step_emergency_{step:07d}")
-            self.save_checkpoint(save_dir, training_state={"step": step, "tokens_seen": cum_tok, "emergency": True})
+            t_data = {"step": step, "tokens_seen": cum_tok, "emergency": True}
+            if hasattr(data_iter, "get_state"):
+                t_data["dataset_state"] = data_iter.get_state()
+            self.save_checkpoint(save_dir, training_state=t_data)
             if cfg.hf_repo_id:
                 p_res = push_to_hub(save_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
                 try:
@@ -370,6 +381,8 @@ class JAXFERNTrainer:
                     "fe_loss": fe,
                     "timestamp": now,
                 }
+                if hasattr(data_iter, "get_state"):
+                    state_dict["dataset_state"] = data_iter.get_state()
                 saved_dir = self.save_checkpoint(
                     path_or_dir=os.path.join(cfg.checkpoint_dir, f"step_{step:07d}"),
                     training_state=state_dict,
@@ -406,16 +419,19 @@ class JAXFERNTrainer:
                 })
 
         final_dir = save_path or os.path.join(cfg.checkpoint_dir, f"step_{step:07d}")
+        final_state = {
+            "step": step,
+            "tokens_seen": cum_tok,
+            "total_loss": tot,
+            "ce_loss": ce,
+            "fe_loss": fe,
+            "timestamp": time.time(),
+        }
+        if hasattr(data_iter, "get_state"):
+            final_state["dataset_state"] = data_iter.get_state()
         self.save_checkpoint(
             path_or_dir=final_dir,
-            training_state={
-                "step": step,
-                "tokens_seen": cum_tok,
-                "total_loss": tot,
-                "ce_loss": ce,
-                "fe_loss": fe,
-                "timestamp": time.time(),
-            },
+            training_state=final_state,
         )
         if cfg.checkpoint_dir:
             prune_checkpoints(cfg.checkpoint_dir, cfg.max_checkpoints_to_keep)
