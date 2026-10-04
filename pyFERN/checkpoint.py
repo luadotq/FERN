@@ -25,7 +25,7 @@ def resolve_checkpoint_dir(checkpoint_path: str, token: Optional[str] = None, re
             repo_id=checkpoint_path,
             token=token,
             revision=revision,
-            allow_patterns=["*.safetensors", "*.json", "*.bin", "*.pt"],
+            allow_patterns=["*.safetensors", "*.json", "*.bin", "*.pt", "*.flax"],
         )
     raise FileNotFoundError(f"Checkpoint not found locally or on Hugging Face: {checkpoint_path}")
 
@@ -189,7 +189,10 @@ def save_training_checkpoint(
     prune_checkpoints(checkpoint_dir, max_to_keep)
 
     if hf_repo_id:
-        push_to_hub(step_dir, hf_repo_id, token=hf_token, private=hf_private)
+        p_res = push_to_hub(step_dir, hf_repo_id, token=hf_token, private=hf_private)
+        if p_res and os.path.exists(step_dir):
+            shutil.rmtree(step_dir, ignore_errors=True)
+            print(f"[Checkpoint] Removed local '{step_dir}' after HF upload")
 
     return step_dir
 

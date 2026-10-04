@@ -305,7 +305,7 @@ class JAXFERNTrainer:
             save_dir = os.path.join(cfg.checkpoint_dir, f"step_emergency_{step:07d}")
             self.save_checkpoint(save_dir, training_state={"step": step, "tokens_seen": cum_tok, "emergency": True})
             if cfg.hf_repo_id:
-                push_to_hub(save_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
+                p_res = push_to_hub(save_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
                 try:
                     from huggingface_hub import HfApi
                     HfApi(token=cfg.hf_token).upload_file(
@@ -317,6 +317,9 @@ class JAXFERNTrainer:
                     )
                 except Exception:
                     pass
+                if p_res and os.path.exists(save_dir):
+                    shutil.rmtree(save_dir, ignore_errors=True)
+                    print(f"[JAX Checkpoint] Cleaned up local emergency '{save_dir}' after HF upload")
             if bot:
                 bot.send_message(f"emergency: jax checkpoint step_{step:07d} saved and uploaded.")
         setup_emergency_handler(emergency_save)
@@ -377,7 +380,7 @@ class JAXFERNTrainer:
                 )
                 prune_checkpoints(cfg.checkpoint_dir, cfg.max_checkpoints_to_keep)
                 if cfg.hf_repo_id and cfg.hf_push_on_save:
-                    push_to_hub(saved_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
+                    p_res = push_to_hub(saved_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
                     try:
                         from huggingface_hub import HfApi
                         HfApi(token=cfg.hf_token).upload_file(
@@ -389,6 +392,9 @@ class JAXFERNTrainer:
                         )
                     except Exception:
                         pass
+                    if p_res and os.path.exists(saved_dir):
+                        shutil.rmtree(saved_dir, ignore_errors=True)
+                        print(f"[JAX Checkpoint] Removed local '{saved_dir}' after HF upload")
                 print(f"[JAX Checkpoint] Saved step {step} -> {saved_dir}")
                 if bot:
                     bot.send_message(f"checkpoint saved: step_{step:07d}")
@@ -418,7 +424,7 @@ class JAXFERNTrainer:
         if cfg.checkpoint_dir:
             prune_checkpoints(cfg.checkpoint_dir, cfg.max_checkpoints_to_keep)
         if cfg.hf_repo_id:
-            push_to_hub(final_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
+            p_res = push_to_hub(final_dir, cfg.hf_repo_id, token=cfg.hf_token, private=cfg.hf_private)
             try:
                 from huggingface_hub import HfApi
                 HfApi(token=cfg.hf_token).upload_file(
@@ -430,6 +436,9 @@ class JAXFERNTrainer:
                 )
             except Exception:
                 pass
+            if p_res and os.path.exists(final_dir):
+                shutil.rmtree(final_dir, ignore_errors=True)
+                print(f"[JAX Checkpoint] Removed local '{final_dir}' after HF upload")
         print(f"[OK] Saved final JAX checkpoint to '{final_dir}'")
         if bot:
             bot.send_message(f"training completed: step_{step:07d}")
