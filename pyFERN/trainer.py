@@ -140,6 +140,7 @@ class FERNTrainer:
         elif isinstance(tokens, dict):
             tokens = tokens.get("tokens", [])
 
+        data_iter = None
         if not use_dataset_iter:
             if isinstance(tokens, list):
                 tokens = torch.tensor(tokens, dtype=torch.long)

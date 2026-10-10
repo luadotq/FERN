@@ -33,7 +33,7 @@ class FERNBlock(nn.Module):
             gamma_max=config.gamma_max,
             chunk_size=getattr(config, "chunk_size", 64),
         )
-        mlp_dim = int(d_model * 2.5)
+        mlp_dim = getattr(config, "mlp_dim", None) or int(d_model * 2.5)
         self.w_up = nn.Linear(d_model, mlp_dim, bias=False)
         self.act = nn.GELU()
         self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
@@ -82,7 +82,7 @@ class FERNModel(nn.Module):
             self.num_layers = config.num_layers or 7
             self.d_model = config.d_model or 448
             self.num_heads = config.num_heads
-            self.head_dim = self.d_model // self.num_heads
+            self.head_dim = getattr(config, "head_dim", None) or (self.d_model // self.num_heads)
 
             self.encoder = nn.Embedding(config.vocab_size, self.d_model)
             self.pad_neutral = nn.Parameter(torch.zeros(1, self.d_model))

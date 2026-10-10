@@ -10,6 +10,8 @@ class ModelConfig:
     num_layers: Optional[int] = None
     d_mem: int = 128
     num_heads: int = 4
+    mlp_dim: Optional[int] = None
+    head_dim: Optional[int] = None
     kappa: float = 0.3
     alpha: float = 0.9
     epsilon_min: float = 1e-4
