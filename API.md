@@ -151,7 +151,7 @@ Dataclass holding recurrent memory representations between steps:
 - `s_vla`: Square attention memory tensor ($B \times H \times d_{head} \times d_{head}$).
 - `s_vla_layers`: List of attention memory tensors for multi-layer stacked configurations.
 
-## 3. Attention & Layers (`pyFERN.vla`, `pyFERN.layers`)
+## 3. Attention & Layers (`pyFERN.vla`, `pyFERN.pla`, `pyFERN.layers`)
 
 ### `VectorLinearAttention`
 
@@ -164,6 +164,16 @@ from pyFERN import VectorLinearAttention
   Computes parallel prefix-scan attention over a full sequence `[B, S, D]`.
 - **`forward_step(x_t: torch.Tensor, s_vla: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]`**  
   Updates the square state matrix for a single time step and returns `(output, updated_s_vla, fe_loss)`.
+
+### `PredictiveLinearAttention`
+
+```python
+from pyFERN import PredictiveLinearAttention
+```
+
+#### Methods
+- **`forward_step(x: torch.Tensor, x_prev: torch.Tensor, v_first: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float]`**  
+  Computes recurrent step with predictive delta associative memory update and velocity mixing.
 
 ### `RMSNorm` & `rms_norm`
 

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from .config import ModelConfig
 from .layers import HierarchicalLayer, rms_norm
 from .vla import VectorLinearAttention
+from .pla import PredictiveLinearAttention
 from .pe import sinusoidal_pe, apply_rope
 
 @dataclass
@@ -18,83 +19,6 @@ class NetworkState:
     s_vla_layers: Optional[List[torch.Tensor]] = None
     pla_state: Optional[List[Dict[str, torch.Tensor]]] = None
     delay_step: int = 0
-
-
-class PredictiveLinearAttention(nn.Module):
-    def __init__(self, layer_id: int, d_model: int, n_head: int, head_dim: int):
-        super().__init__()
-        self.layer_id = layer_id
-        self.H = n_head
-        self.N = head_dim
-        self.x_r = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_w = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_k = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_v = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_a = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_g = nn.Parameter(torch.empty(1, 1, d_model))
-        self.w0 = nn.Parameter(torch.empty(1, 1, d_model))
-        self.w1 = nn.Parameter(torch.empty(d_model, 64))
-        self.w2 = nn.Parameter(torch.empty(64, d_model))
-        self.a0 = nn.Parameter(torch.empty(1, 1, d_model))
-        self.a1 = nn.Parameter(torch.empty(d_model, 64))
-        self.a2 = nn.Parameter(torch.empty(64, d_model))
-        self.v0 = nn.Parameter(torch.empty(1, 1, d_model))
-        self.v1 = nn.Parameter(torch.empty(d_model, 32))
-        self.v2 = nn.Parameter(torch.empty(32, d_model))
-        self.g1 = nn.Parameter(torch.empty(d_model, 128))
-        self.g2 = nn.Parameter(torch.empty(128, d_model))
-        self.k_k = nn.Parameter(torch.empty(1, 1, d_model))
-        self.k_a = nn.Parameter(torch.empty(1, 1, d_model))
-        self.r_k = nn.Parameter(torch.empty(n_head, head_dim))
-        
-        self.w_q = nn.Linear(d_model, d_model, bias=False)
-        self.w_k = nn.Linear(d_model, d_model, bias=False)
-        self.w_v = nn.Linear(d_model, d_model, bias=False)
-        self.w_out = nn.Linear(d_model, d_model, bias=False)
-        self.ln_x = nn.LayerNorm(d_model)
-
-    def forward_step(self, x: torch.Tensor, x_prev: torch.Tensor, v_first: torch.Tensor, state: torch.Tensor):
-        H, N = self.H, self.N
-        dx = x_prev - x
-        xr = x + dx * self.x_r.squeeze()
-        xw = x + dx * self.x_w.squeeze()
-        xk = x + dx * self.x_k.squeeze()
-        xv = x + dx * self.x_v.squeeze()
-        xa = x + dx * self.x_a.squeeze()
-        xg = x + dx * self.x_g.squeeze()
-
-        r = self.w_q(xr)
-        w = torch.tanh(xw @ self.w1) @ self.w2
-        k = self.w_k(xk)
-        v = self.w_v(xv)
-        a = torch.sigmoid(self.a0.squeeze() + (xa @ self.a1) @ self.a2)
-        g = torch.sigmoid(xg @ self.g1) @ self.g2
-
-        kk = k * self.k_k.squeeze()
-        kk = F.normalize(kk.view(H, N), dim=-1, p=2.0).view(-1)
-        k = k * (1 + (a - 1) * self.k_a.squeeze())
-
-        if self.layer_id == 0:
-            v_first = v
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0.squeeze() + (xv @ self.v1) @ self.v2)
-
-        w = self.w0.squeeze().float() + w.float()
-        w = torch.exp(-0.606531 * torch.sigmoid(w))
-
-        # Predictive coding associative memory error and Free Energy
-        vk = v.view(H, N, 1) @ k.view(H, 1, N)
-        ab = (-kk).view(H, N, 1) @ (kk * a).view(H, 1, N)
-        e_vla = vk + state @ ab.float()
-        fe_vla = (e_vla ** 2).mean()
-
-        state = state * w.view(H, 1, N) + e_vla
-        out = (state.to(dtype=x.dtype) @ r.view(H, N, 1)).view(1, H * N)
-
-        out = F.group_norm(out, num_groups=H, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(H * N)
-        r_k = self.r_k.flatten()
-        out = out + ((r * k * r_k).view(H, N).sum(dim=-1, keepdim=True) * v.view(H, N)).view(H * N)
-        return self.w_out(out * g), x, state, v_first, fe_vla
 
 
 class FERNBlock(nn.Module):
@@ -164,8 +88,10 @@ class FERNBlock(nn.Module):
             mlp_out = self.w_down(torch.relu(self.w_up(k)) ** 2)
             out = h + mlp_out
 
-            p_err = xx2 - self.ln2(out)
-            fe_pc = (p_err ** 2).mean()
+            fe_pc = 0.0
+            if self.training:
+                p_err = xx2 - self.ln2(out)
+                fe_pc = (p_err ** 2).mean()
 
             state["x_prev_att"] = new_x_prev_att
             state["state_att"] = new_state_att
@@ -184,7 +110,7 @@ class FERNBlock(nn.Module):
             p_err = norm_h - rms_norm(out, self.rms_eps)
             fe_pc = (p_err ** 2).mean()
 
-            return out, new_s_vla, None, fe_vla + fe_pc
+            return out, new_s_vla, fe_vla + fe_pc
 
 
 class FERNModel(nn.Module):

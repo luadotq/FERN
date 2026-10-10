@@ -4,6 +4,7 @@ from .config import ModelConfig, TrainingConfig
 from .network import FERNModel, FERNBlock, NetworkState
 from .layers import RMSNorm, LinearNoBias, MLP, HierarchicalLayer, rms_norm
 from .vla import VectorLinearAttention
+from .pla import PredictiveLinearAttention
 from .pe import sinusoidal_pe, apply_rope
 from .checkpoint import (
     from_pretrained,
@@ -17,7 +18,7 @@ from .tokenizer import FERNTokenizer, load_stock_tokenizer, load_tokenizer
 from .data import PretokenizedDataset, JAXDataIterator, prepare_pretokenized_dataset
 from .trainer import FERNTrainer
 from .distributed import init_distributed, get_deepspeed_config, setup_distributed_engine
-from .kernels import triton_vla_forward, chunkwise_vla, HAS_TRITON
+from .kernels import triton_vla_forward, chunkwise_vla, HAS_TRITON, pla_step, pla_recurrent
 from .telemetry import TelegramMonitor, MetricsLogger, TrainingControl, setup_emergency_handler
 from .streaming import SlidingShardLoader
 
@@ -33,6 +34,7 @@ __all__ = [
     "HierarchicalLayer",
     "rms_norm",
     "VectorLinearAttention",
+    "PredictiveLinearAttention",
     "sinusoidal_pe",
     "apply_rope",
     "from_pretrained",
@@ -54,6 +56,8 @@ __all__ = [
     "triton_vla_forward",
     "chunkwise_vla",
     "HAS_TRITON",
+    "pla_step",
+    "pla_recurrent",
     "TelegramMonitor",
     "MetricsLogger",
     "TrainingControl",
