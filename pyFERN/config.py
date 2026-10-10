@@ -12,6 +12,11 @@ class ModelConfig:
     num_heads: int = 4
     mlp_dim: Optional[int] = None
     head_dim: Optional[int] = None
+    act: str = "gelu"
+    attn_type: str = "vla"
+    mlp_bias: bool = False
+    tied_embeddings: bool = True
+    decoder_bias: bool = False
     kappa: float = 0.3
     alpha: float = 0.9
     epsilon_min: float = 1e-4

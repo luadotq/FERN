@@ -89,7 +89,8 @@ def from_pretrained(
     model.load_state_dict(state_dict, strict=False)
     # Tied embeddings decoder weight
     if model.is_deep and hasattr(model, "decoder") and hasattr(model, "encoder"):
-        model.decoder.weight = model.encoder.weight
+        if getattr(model.config, "tied_embeddings", True):
+            model.decoder.weight = model.encoder.weight
     model.to(device)
     return model
 
