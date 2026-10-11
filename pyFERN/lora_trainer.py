@@ -63,7 +63,7 @@ class FERNLoRATrainer:
 
         if is_main_process():
             pct = 100 * self.trainable_params / max(1, self.total_params)
-            print(f"LoRA Initialized: {self.trainable_params:,} / {self.total_params:,} trainable params ({pct:.2f}%)")
+            print(f"LoRA Initialized: {self.trainable_params:,} / {self.total_params:,} trainable params ({pct:.2f}%)", flush=True)
 
     def get_lr(self, step: int, total_steps: int) -> float:
         w = self.config.warmup_steps
@@ -166,7 +166,7 @@ class FERNLoRATrainer:
             self.tokenizer.save_pretrained(merged_path)
 
         if is_main_process():
-            print(f"[LoRA] Model merged and saved to '{merged_path}'")
+            print(f"[LoRA] Model merged and saved to '{merged_path}'", flush=True)
 
         if self.config.hf_repo_id:
             hub_repo = f"{self.config.hf_repo_id}-merged"
@@ -198,6 +198,7 @@ class FERNLoRATrainer:
             batch_size=cfg.batch_size,
             shuffle=True,
             collate_fn=sft_collate_fn,
+            pin_memory=torch.cuda.is_available(),
         )
 
         val_loader = None
@@ -262,7 +263,7 @@ class FERNLoRATrainer:
         setup_emergency_handler(emergency_save)
 
         if is_main_process():
-            print(f"Starting LoRA training: {epochs} epoch(s), {total_steps} steps")
+            print(f"Starting LoRA training: {epochs} epoch(s), {total_steps} steps", flush=True)
             if bot:
                 bot.send_message(f"LoRA training started: {epochs} epochs, {total_steps} steps, r={cfg.lora_r}")
 
@@ -270,7 +271,7 @@ class FERNLoRATrainer:
         for ep in range(epochs):
             for it, (x, y) in enumerate(loader):
                 if control.emergency_exit or control.request_stop:
-                    print(f"[Control] Stopping training at step {step}.")
+                    print(f"[Control] Stopping training at step {step}.", flush=True)
                     break
 
                 if control.override_lr is not None:
@@ -297,9 +298,9 @@ class FERNLoRATrainer:
                     step += 1
                     cur_lr = self.engine.get_lr()[0] if hasattr(self.engine, "get_lr") else cur_lr
 
-                if step % cfg.log_interval == 0 and is_main_process():
+                if (step == 1 or step % cfg.log_interval == 0) and is_main_process():
                     spd = cum_tok / max(0.1, time.time() - start_time)
-                    print(f"Epoch {ep+1}/{epochs} | Step {step}/{total_steps} | CE: {ce:.4f} | FE: {fe:.4f} | LR: {cur_lr:.2e} | Speed: {spd:.0f} tok/s")
+                    print(f"Epoch {ep+1}/{epochs} | Step {step}/{total_steps} | CE: {ce:.4f} | FE: {fe:.4f} | LR: {cur_lr:.2e} | Speed: {spd:.0f} tok/s", flush=True)
                     logger.log({
                         "step": step, "tokens": cum_tok, "train_loss": tot, "ce_loss": ce, "fe_loss": fe,
                         "lr": cur_lr, "speed": spd, "elapsed": time.time() - start_time,
@@ -312,7 +313,7 @@ class FERNLoRATrainer:
                         v_loss, v_ce, v_fe, v_ppl, v_bpb = self.evaluate(val_loader, val_steps=cfg.val_steps)
                         self.model.train()
                         if is_main_process():
-                            print(f"[Val] Step {step} | Loss: {v_loss:.4f} | PPL: {v_ppl:.2f} | BPB: {v_bpb:.3f}")
+                            print(f"[Val] Step {step} | Loss: {v_loss:.4f} | PPL: {v_ppl:.2f} | BPB: {v_bpb:.3f}", flush=True)
                             logger.log({
                                 "step": step, "tokens": cum_tok, "val_loss": v_loss, "val_ce": v_ce,
                                 "val_fe": v_fe, "val_ppl": v_ppl, "val_bpb": v_bpb,
@@ -330,7 +331,7 @@ class FERNLoRATrainer:
                         control.request_save = False
                         last_save_time = now
                         ckpt_dir = self.save_adapter_checkpoint(step=step)
-                        print(f"[Checkpoint] Saved adapter step {step} -> '{ckpt_dir}'")
+                        print(f"[Checkpoint] Saved adapter step {step} -> '{ckpt_dir}'", flush=True)
                         if bot:
                             bot.send_message(f"adapter step_{step:07d} saved and uploaded.")
 
@@ -340,7 +341,7 @@ class FERNLoRATrainer:
         # Final save and optional merge
         if is_main_process():
             final_adapter = self.save_adapter_checkpoint(step=step, is_final=True)
-            print(f"[LoRA] Final adapter saved to '{final_adapter}'")
+            print(f"[LoRA] Final adapter saved to '{final_adapter}'", flush=True)
             if cfg.lora_merge_on_end:
                 merged_path = self.merge_and_export()
                 if bot:

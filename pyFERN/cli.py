@@ -328,7 +328,7 @@ def main():
     lora_p.add_argument("--precision", "--mixed-precision", dest="precision", choices=["no", "fp16", "bf16"], default="fp16", help="Mixed precision mode")
     lora_p.add_argument("--merge", "--merge-on-end", dest="merge", action="store_true", default=True, help="Merge adapter weights into base model after training")
     lora_p.add_argument("--no-merge", dest="merge", action="store_false", help="Do not merge adapter after training")
-    lora_p.add_argument("--log-interval", type=int, default=10, help="Logging step interval")
+    lora_p.add_argument("--log-interval", type=int, default=1, help="Logging step interval")
     lora_p.add_argument("--device", default=None, help="Device to run on (cuda/cpu)")
     lora_p.add_argument("--deepspeed", "--use-deepspeed", dest="use_deepspeed", action="store_true", default=False, help="Enable DeepSpeed ZeRO engine")
     lora_p.add_argument("--zero-stage", type=int, default=2, help="DeepSpeed ZeRO stage (1, 2, or 3)")
