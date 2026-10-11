@@ -28,9 +28,11 @@ class LoRALinear(nn.Module):
 
         in_f = linear.in_features
         out_f = linear.out_features
+        dev = linear.weight.device
+        dtype = linear.weight.dtype
 
-        self.lora_a = nn.Parameter(torch.empty(r, in_f))
-        self.lora_b = nn.Parameter(torch.zeros(out_f, r))
+        self.lora_a = nn.Parameter(torch.empty(r, in_f, device=dev, dtype=dtype))
+        self.lora_b = nn.Parameter(torch.zeros(out_f, r, device=dev, dtype=dtype))
         self.dropout = nn.Dropout(dropout) if dropout > 0.0 else nn.Identity()
 
         # Kaiming uniform init for A, zero init for B

@@ -26,16 +26,16 @@ class FERNLoRATrainer:
     ):
         self.config = config or TrainingConfig(**kwargs)
         self.device = self.config.device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = model.to(self.device)
         self.tokenizer = tokenizer
 
         # inject LoRA adapter into model
         self.trainable_params, self.total_params = inject_lora(
-            self.model,
+            model,
             r=self.config.lora_r,
             alpha=self.config.lora_alpha,
             dropout=self.config.lora_dropout,
         )
+        self.model = model.to(self.device)
 
         trainable = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = torch.optim.AdamW(
