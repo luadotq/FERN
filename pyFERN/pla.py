@@ -66,10 +66,10 @@ class PredictiveLinearAttention(nn.Module):
         v = v.view(h, n)
 
         w = self.w0.squeeze().float() + w.float()
-        w = torch.exp(-0.606531 * torch.sigmoid(w)).view(h, n)
+        w = torch.exp(-0.606531 * torch.sigmoid(w)).to(dtype=r.dtype).view(h, n)
 
         out, state = pla_step(r, w, k, v, a, kk, state)
-        normed = F.group_norm(out.view(1, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(h * n)
+        normed = F.group_norm(out.view(1, h * n), num_groups=h, weight=self.ln_x.weight.to(dtype=out.dtype), bias=self.ln_x.bias.to(dtype=out.dtype) if self.ln_x.bias is not None else None, eps=64e-5).view(h * n)
         bonus = ((r * k * self.r_k).sum(dim=-1, keepdim=True) * v).view(h * n)
         fe_pla = ((v.view(h * n) - normed) ** 2).mean()
         return self.w_out((normed + bonus) * g), x, state, v_first, fe_pla
@@ -88,7 +88,7 @@ class PredictiveLinearAttention(nn.Module):
         r = self.w_q(xr).view(b, t, h, n)
         w = torch.tanh(xw @ self.w1) @ self.w2
         w = self.w0.float() + w.float()
-        w = torch.exp(-0.606531 * torch.sigmoid(w)).view(b, t, h, n)
+        w = torch.exp(-0.606531 * torch.sigmoid(w)).to(dtype=r.dtype).view(b, t, h, n)
 
         k = self.w_k(xk)
         v = self.w_v(xv)
@@ -106,7 +106,7 @@ class PredictiveLinearAttention(nn.Module):
         v = v.view(b, t, h, n)
 
         raw, _ = chunkwise_pla(r, w, k, v, a, kk, chunk_size=32, with_bonus=False)
-        normed = F.group_norm(raw.view(b * t, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(b, t, h * n)
+        normed = F.group_norm(raw.view(b * t, h * n), num_groups=h, weight=self.ln_x.weight.to(dtype=raw.dtype), bias=self.ln_x.bias.to(dtype=raw.dtype) if self.ln_x.bias is not None else None, eps=64e-5).view(b, t, h * n)
         bonus = ((r * k * self.r_k.view(h, n)).sum(dim=-1, keepdim=True) * v).view(b, t, h * n)
         out = self.w_out((normed + bonus) * g)
         fe_pla = ((v.view(b, t, h * n) - normed) ** 2).mean()

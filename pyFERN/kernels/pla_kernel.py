@@ -11,11 +11,13 @@ def pla_step(
     kk: torch.Tensor,
     s: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    dt = r.dtype
+    w, k, v, a, kk, s = w.to(dt), k.to(dt), v.to(dt), a.to(dt), kk.to(dt), s.to(dt)
     h, n = r.shape[0], r.shape[1]
     sa = s @ (-kk).view(h, n, 1)
     e = v.view(h, n, 1) @ k.view(h, 1, n) + sa @ (kk * a).view(h, 1, n)
     s_new = s * w.view(h, 1, n) + e
-    out = (s_new.to(dtype=r.dtype) @ r.view(h, n, 1)).view(h * n)
+    out = (s_new @ r.view(h, n, 1)).view(h * n)
     return out, s_new
 
 
@@ -26,16 +28,20 @@ def pla_recurrent(
     v: torch.Tensor,
     a: torch.Tensor,
     kk: torch.Tensor,
-    r_k: torch.Tensor,
+    r_k: Optional[torch.Tensor] = None,
     s: Optional[torch.Tensor] = None,
     with_bonus: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     b, t, h, n = r.shape
+    dt = r.dtype
+    w, k, v, a, kk = w.to(dt), k.to(dt), v.to(dt), a.to(dt), kk.to(dt)
     if s is None:
-        s = torch.zeros((b, h, n, n), device=r.device, dtype=torch.float32)
+        s = torch.zeros((b, h, n, n), device=r.device, dtype=dt)
+    else:
+        s = s.to(dt)
 
     outs = []
-    r_k_flat = r_k.view(h, n) if (r_k is not None and with_bonus) else None
+    r_k_flat = r_k.to(dt).view(h, n) if (r_k is not None and with_bonus) else None
     for i in range(t):
         r_i = r[:, i]
         w_i = w[:, i]
@@ -49,7 +55,7 @@ def pla_recurrent(
         pred = torch.matmul(sa, (kk_i * a_i).unsqueeze(-2))
         s = s * w_i.unsqueeze(-2) + kv + pred
 
-        out_i = torch.matmul(s.to(dtype=r.dtype), r_i.unsqueeze(-1)).squeeze(-1)
+        out_i = torch.matmul(s, r_i.unsqueeze(-1)).squeeze(-1)
         if r_k_flat is not None:
             bonus_i = (r_i * k_i * r_k_flat).sum(dim=-1, keepdim=True) * v_i
             out_i = out_i + bonus_i
@@ -72,7 +78,12 @@ def chunkwise_pla(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     b, t, h, n = r.shape
     c_size = chunk_size
-    if t <= c_size:
+    dt = r.dtype
+    w, k, v, a, kk = w.to(dt), k.to(dt), v.to(dt), a.to(dt), kk.to(dt)
+    if r_k is not None:
+        r_k = r_k.to(dt)
+
+    if t < c_size:
         return pla_recurrent(r, w, k, v, a, kk, r_k, s=s, with_bonus=with_bonus)
 
     nc = t // c_size
@@ -95,9 +106,9 @@ def chunkwise_pla(
     u_c = -kk_c
     z_c = kk_c * a_c
 
-    A = torch.zeros(b, h, nc, c_size, c_size, device=r.device, dtype=r.dtype)
-    r_tilde = torch.zeros(b, h, nc, c_size, n, device=r.device, dtype=r.dtype)
-    k_tilde = torch.zeros(b, h, nc, c_size, n, device=r.device, dtype=r.dtype)
+    A = torch.zeros(b, h, nc, c_size, c_size, device=r.device, dtype=dt)
+    r_tilde = torch.zeros(b, h, nc, c_size, n, device=r.device, dtype=dt)
+    k_tilde = torch.zeros(b, h, nc, c_size, n, device=r.device, dtype=dt)
 
     for tau in range(c_size):
         A[:, :, :, tau, tau] = (k_c[:, :, :, tau] * r_c[:, :, :, tau]).sum(dim=-1)
@@ -119,7 +130,7 @@ def chunkwise_pla(
     delta_s = torch.matmul(v_c.transpose(-2, -1), k_tilde)
     intra_out = torch.matmul(A.transpose(-2, -1), v_c)
 
-    curr_s = s if s is not None else torch.zeros(b, h, n, n, device=r.device, dtype=torch.float32)
+    curr_s = s.to(dt) if s is not None else torch.zeros(b, h, n, n, device=r.device, dtype=dt)
     outs = []
 
     for c in range(nc):
