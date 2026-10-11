@@ -18,9 +18,18 @@ from .tokenizer import FERNTokenizer, load_stock_tokenizer, load_tokenizer
 from .data import PretokenizedDataset, JAXDataIterator, prepare_pretokenized_dataset
 from .trainer import FERNTrainer
 from .distributed import init_distributed, get_deepspeed_config, setup_distributed_engine
-from .kernels import triton_vla_forward, chunkwise_vla, HAS_TRITON, pla_step, pla_recurrent
+from .kernels import (
+    triton_vla_forward,
+    chunkwise_vla,
+    HAS_TRITON,
+    pla_step,
+    pla_recurrent,
+    chunkwise_pla,
+    triton_pla_forward,
+)
 from .telemetry import TelegramMonitor, MetricsLogger, TrainingControl, setup_emergency_handler
 from .streaming import SlidingShardLoader
+from .lora import LoRALinear, inject_lora, save_adapter, load_adapter, merge_and_save
 
 __all__ = [
     "ModelConfig",
@@ -63,4 +72,12 @@ __all__ = [
     "TrainingControl",
     "setup_emergency_handler",
     "SlidingShardLoader",
+    "chunkwise_pla",
+    "triton_pla_forward",
+    "LoRALinear",
+    "inject_lora",
+    "save_adapter",
+    "load_adapter",
+    "merge_and_save",
 ]
+

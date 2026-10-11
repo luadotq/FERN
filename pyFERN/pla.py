@@ -2,7 +2,7 @@ from typing import Tuple, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .kernels.pla_kernel import pla_step
+from .kernels.pla_kernel import pla_step, chunkwise_pla
 
 
 class PredictiveLinearAttention(nn.Module):
@@ -72,3 +72,40 @@ class PredictiveLinearAttention(nn.Module):
         out = F.group_norm(out.view(1, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(h * n)
         out = out + ((r * k * self.r_k).sum(dim=-1, keepdim=True) * v).view(h * n)
         return self.w_out(out * g), x, state, v_first, 0.0
+
+    def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, float, Optional[torch.Tensor]]:
+        b, t, d = x.shape
+        h, n = self.h, self.n
+        dx = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1] - x[:, 1:]], dim=1)
+        xr = x + dx * self.x_r
+        xw = x + dx * self.x_w
+        xk = x + dx * self.x_k
+        xv = x + dx * self.x_v
+        xa = x + dx * self.x_a
+        xg = x + dx * self.x_g
+
+        r = self.w_q(xr).view(b, t, h, n)
+        w = torch.tanh(xw @ self.w1) @ self.w2
+        w = self.w0.float() + w.float()
+        w = torch.exp(-0.606531 * torch.sigmoid(w)).view(b, t, h, n)
+
+        k = self.w_k(xk)
+        v = self.w_v(xv)
+        a = torch.sigmoid(self.a0 + (xa @ self.a1) @ self.a2).view(b, t, h, n)
+        g = torch.sigmoid(xg @ self.g1) @ self.g2
+
+        kk = k * self.k_k
+        kk = F.normalize(kk.view(b, t, h, n), dim=-1, p=2.0)
+        k = (k * (1 + (a.view(b, t, -1) - 1) * self.k_a)).view(b, t, h, n)
+
+        if self.layer_id == 0:
+            v_first = v
+        elif v_first is not None:
+            v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2)
+        v = v.view(b, t, h, n)
+
+        raw, _ = chunkwise_pla(r, w, k, v, a, kk, chunk_size=32, with_bonus=False)
+        normed = F.group_norm(raw.view(b * t, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(b, t, h * n)
+        bonus = ((r * k * self.r_k.view(h, n)).sum(dim=-1, keepdim=True) * v).view(b, t, h * n)
+        out = self.w_out((normed + bonus) * g)
+        return out, 0.0, v_first

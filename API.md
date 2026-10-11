@@ -174,11 +174,33 @@ from pyFERN import PredictiveLinearAttention
 #### Methods
 - **`forward_step(x: torch.Tensor, x_prev: torch.Tensor, v_first: torch.Tensor, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float]`**  
   Computes recurrent step with predictive delta associative memory update and velocity mixing.
+- **`forward_parallel(x: torch.Tensor, v_first: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, float, Optional[torch.Tensor]]`**  
+  Computes sequence forward pass using accelerated `chunkwise_pla`.
 
-### `RMSNorm` & `rms_norm`
+### `PLA & VLA Kernels` (`pyFERN.kernels`)
 
 ```python
-from pyFERN import RMSNorm, rms_norm
+from pyFERN import chunkwise_pla, triton_pla_forward, chunkwise_vla, triton_vla_forward
+```
+
+- **`chunkwise_pla(r, w, k, v, a, kk, r_k=None, s=None, chunk_size=32, with_bonus=True)`**: Chunkwise associative scan decomposing sequences into $C$-sized blocks with parallel intra-chunk attention and inter-chunk state recurrence.
+- **`triton_pla_forward(...)`**: Fused GPU Triton recurrent forward kernel keeping $S \in \mathbb{R}^{64 \times 64}$ in register/SRAM memory, falling back to `chunkwise_pla`.
+
+
+### `LoRA Adapters` (`pyFERN.lora`)
+
+```python
+from pyFERN import inject_lora, save_adapter, load_adapter, merge_and_save
+
+# Inject high-rank LoRA into model
+trainable, total = inject_lora(model, r=64, alpha=128.0)
+
+# Save and load adapter
+save_adapter(model, "checkpoints/my_adapter", r=64, alpha=128.0)
+load_adapter(model, "checkpoints/my_adapter")
+
+# Merge adapter weights into base model
+merge_and_save(model, "checkpoints/merged_model")
 ```
 
 ## 4. Checkpoint Management (`pyFERN.checkpoint`)

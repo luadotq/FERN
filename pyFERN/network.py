@@ -60,19 +60,31 @@ class FERNBlock(nn.Module):
             nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
             nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
 
-    def forward_parallel(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        norm_x = rms_norm(x, self.rms_eps)
-        vla_out, fe_vla = self.vla.forward_parallel(norm_x)
-        h = x + vla_out
+    def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None):
+        if self.is_pla:
+            xx1 = self.ln1(x)
+            vla_out, fe_vla, v_first = self.vla.forward_parallel(xx1, v_first)
+            h = x + vla_out
 
-        norm_h = rms_norm(h, self.rms_eps)
-        mlp_out = self.w_down(self.act(self.w_up(norm_h)))
-        out = h + mlp_out
+            xx2 = self.ln2(h)
+            dx = torch.cat([torch.zeros_like(xx2[:, :1]), xx2[:, :-1] - xx2[:, 1:]], dim=1)
+            k = xx2 + dx * self.x_k
+            mlp_out = self.w_down(torch.relu(self.w_up(k)) ** 2)
+            out = h + mlp_out
+            return out, fe_vla, v_first
+        else:
+            norm_x = rms_norm(x, self.rms_eps)
+            vla_out, fe_vla = self.vla.forward_parallel(norm_x)
+            h = x + vla_out
 
-        p_err = norm_h - rms_norm(out, self.rms_eps)
-        fe_pc = (p_err ** 2).mean()
+            norm_h = rms_norm(h, self.rms_eps)
+            mlp_out = self.w_down(self.act(self.w_up(norm_h)))
+            out = h + mlp_out
 
-        return out, fe_vla + fe_pc
+            p_err = norm_h - rms_norm(out, self.rms_eps)
+            fe_pc = (p_err ** 2).mean()
+
+            return out, fe_vla + fe_pc
 
     def forward_step(self, x: torch.Tensor, state, v_first: Optional[torch.Tensor] = None):
         if self.is_pla:
@@ -212,21 +224,46 @@ class FERNModel(nn.Module):
         s_vla = torch.zeros((batch_size, num_heads, head_dim, head_dim), device=device)
         return NetworkState(mu=mu, sigma2=sigma2, memory=memory, s_vla=s_vla, delay_step=0)
 
+    def get_state_size_bytes(self, batch_size: int = 1, dtype: torch.dtype = torch.float32) -> int:
+        b_bytes = 4 if dtype in (torch.float32, torch.int32) else 2
+        if self.is_deep:
+            if getattr(self.config, "attn_type", "vla") == "pla":
+                n_el = (self.d_model + self.num_heads * self.head_dim * self.head_dim + self.d_model) * self.num_layers
+            else:
+                n_el = self.num_heads * self.head_dim * self.head_dim * self.num_layers
+            return n_el * batch_size * b_bytes
+        h, d = self.config.num_heads, self.config.d_mem // self.config.num_heads
+        n_el = sum(self.config.d_layers) * 2 + self.config.d_mem + h * d * d
+        return n_el * batch_size * b_bytes
+
     def forward_parallel(self, tokens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         eps = self.config.rms_eps
         if self.is_deep:
             h = self.encoder(tokens)
             total_fe = torch.zeros((), device=tokens.device, dtype=h.dtype)
             use_ckpt = self.training and getattr(self.config, "gradient_checkpointing", False)
+            v_first = None
+            is_pla = getattr(self.config, "attn_type", "vla") == "pla"
+
             for block in self.blocks:
                 if use_ckpt:
                     import torch.utils.checkpoint as cp
-                    h, fe_l = cp.checkpoint(block.forward_parallel, h, use_reentrant=False)
+                    if block.is_pla:
+                        h, fe_l, v_first = cp.checkpoint(block.forward_parallel, h, v_first, use_reentrant=False)
+                    else:
+                        h, fe_l = cp.checkpoint(block.forward_parallel, h, use_reentrant=False)
                 else:
-                    h, fe_l = block.forward_parallel(h)
+                    if block.is_pla:
+                        h, fe_l, v_first = block.forward_parallel(h, v_first)
+                    else:
+                        h, fe_l = block.forward_parallel(h)
                 total_fe = total_fe + fe_l
             avg_fe = total_fe / len(self.blocks)
-            logits = self.decoder(rms_norm(h, eps))
+            if is_pla:
+                h = self.ln_out(h)
+            else:
+                h = rms_norm(h, eps)
+            logits = self.decoder(h)
             return logits, avg_fe
 
         embeddings = self.encoder(tokens)
