@@ -251,3 +251,68 @@ def prepare_pretokenized_dataset(
         json.dump(metadata, f, indent=2)
 
     return metadata
+
+
+class SFTDataset:
+    def __init__(self, path: str, tok=None, max_len: int = 2048):
+        self.tok = tok
+        self.max_len = max_len
+        self.data = []
+        if path.endswith(".parquet"):
+            import pandas as pd
+            df = pd.read_parquet(path)
+            self.data = df.to_dict(orient="records")
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        self.data.append(json.loads(line))
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx: int):
+        import torch
+        row = self.data[idx]
+        if "input_ids" in row and "labels" in row:
+            tids = row["input_ids"][: self.max_len]
+            lbls = row["labels"][: self.max_len]
+            return torch.tensor(tids, dtype=torch.long), torch.tensor(lbls, dtype=torch.long)
+
+        txt = row.get("text", "")
+        if self.tok is None:
+            raise ValueError("Tokenizer required when dataset contains un-tokenized text.")
+        tokens = self.tok.encode(txt, add_special_tokens=False) if hasattr(self.tok, "encode") else []
+        if hasattr(tokens, "ids"):
+            tokens = tokens.ids
+        if len(tokens) > self.max_len:
+            tokens = tokens[: self.max_len]
+
+        input_ids = torch.tensor(tokens, dtype=torch.long)
+        labels = input_ids.clone()
+        sep = self.tok.encode("Assistant:", add_special_tokens=False) if hasattr(self.tok, "encode") else []
+        if hasattr(sep, "ids"):
+            sep = sep.ids
+        s_len = len(sep)
+        sep_pos = -1
+        for i in range(len(tokens) - s_len + 1):
+            if tokens[i : i + s_len] == sep:
+                sep_pos = i + s_len
+                break
+        if sep_pos != -1:
+            labels[:sep_pos] = -100
+        else:
+            labels[:-1] = -100
+        return input_ids, labels
+
+
+def sft_collate_fn(batch):
+    import torch
+    max_l = max(len(x[0]) for x in batch)
+    b_size = len(batch)
+    inputs = torch.zeros(b_size, max_l, dtype=torch.long)
+    labels = torch.full((b_size, max_l), -100, dtype=torch.long)
+    for i, (inp, lbl) in enumerate(batch):
+        inputs[i, : len(inp)] = inp
+        labels[i, : len(lbl)] = lbl
+    return inputs, labels

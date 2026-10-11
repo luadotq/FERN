@@ -15,8 +15,15 @@ from .checkpoint import (
     find_latest_checkpoint,
 )
 from .tokenizer import FERNTokenizer, load_stock_tokenizer, load_tokenizer
-from .data import PretokenizedDataset, JAXDataIterator, prepare_pretokenized_dataset
+from .data import (
+    PretokenizedDataset,
+    JAXDataIterator,
+    prepare_pretokenized_dataset,
+    SFTDataset,
+    sft_collate_fn,
+)
 from .trainer import FERNTrainer
+from .lora_trainer import FERNLoRATrainer
 from .distributed import init_distributed, get_deepspeed_config, setup_distributed_engine
 from .kernels import (
     triton_vla_forward,
@@ -59,6 +66,9 @@ __all__ = [
     "JAXDataIterator",
     "prepare_pretokenized_dataset",
     "FERNTrainer",
+    "FERNLoRATrainer",
+    "SFTDataset",
+    "sft_collate_fn",
     "init_distributed",
     "get_deepspeed_config",
     "setup_distributed_engine",

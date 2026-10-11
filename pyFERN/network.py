@@ -35,7 +35,7 @@ class FERNBlock(nn.Module):
             self.ln1 = nn.LayerNorm(d_model)
             self.vla = PredictiveLinearAttention(layer_id, d_model, num_heads, head_dim)
             self.ln2 = nn.LayerNorm(d_model)
-            self.x_k = nn.Parameter(torch.empty(1, 1, d_model))
+            self.x_k = nn.Parameter(torch.zeros(1, 1, d_model))
             self.w_up = nn.Linear(d_model, mlp_dim, bias=False)
             self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
         else:
@@ -53,12 +53,11 @@ class FERNBlock(nn.Module):
             act_name = getattr(config, "act", "gelu")
             self.act = (lambda x: torch.relu(x) ** 2) if act_name == "squared_relu" else nn.GELU()
             self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
-            self._init_weights(config.init_range)
+        self._init_weights(config.init_range)
 
     def _init_weights(self, r: float):
-        if not self.is_pla:
-            nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
-            nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
+        nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
+        nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
 
     def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None):
         if self.is_pla:
@@ -71,7 +70,8 @@ class FERNBlock(nn.Module):
             k = xx2 + dx * self.x_k
             mlp_out = self.w_down(torch.relu(self.w_up(k)) ** 2)
             out = h + mlp_out
-            return out, fe_vla, v_first
+            fe_pc = ((xx2 - self.ln2(out)) ** 2).mean()
+            return out, fe_vla + fe_pc, v_first
         else:
             norm_x = rms_norm(x, self.rms_eps)
             vla_out, fe_vla = self.vla.forward_parallel(norm_x)

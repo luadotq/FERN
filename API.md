@@ -288,9 +288,49 @@ High-performance TPU and GPU trainer utilizing `jax.jit`, `optax.adamw`, and TPU
 - Seamless resumption with full optimizer momentum/variance restoration.
 - Native validation loop computing CE, Free Energy, PPL, and BPB.
 
+### `FERNLoRATrainer` (LoRA Fine-tuning)
+
+```python
+from pyFERN import FERNLoRATrainer, TrainingConfig, SFTDataset
+
+trainer = FERNLoRATrainer(
+    model,
+    config=TrainingConfig(
+        lr=2e-4,
+        lora_r=64,
+        lora_alpha=128.0,
+        batch_size=4,
+        grad_accum_steps=4,
+        checkpoint_dir="checkpoints/lora_run",
+        hf_repo_id="username/fern-lora-adapter",
+        lora_merge_on_end=True,
+    ),
+)
+trainer.train(dataset, num_epochs=1)
+```
+
+- Injects LoRA into base `FERNModel` projections (`w_r`, `w_k`, `w_v`, `w_o`).
+- Parallel sequence forward pass with `chunkwise_pla`.
+- Gradient accumulation and Mixed Precision (`fp16`/`bf16`).
+- Automatic step/time checkpointing with HF Hub adapter upload.
+- Telegram remote telemetry (`/status`, `/plot`, `/save`, `/stop`, `/lr`, `/val`).
+- Auto-merge adapter into base weights (`merge_and_export`) and push merged full model to HF Hub.
+
 ---
 
-## 7. Streaming & Dynamic Shard Management (`pyFERN.streaming`)
+## 7. Streaming & Dynamic Shard Management (`pyFERN.streaming`, `pyFERN.data`)
+
+### `SFTDataset` & `sft_collate_fn`
+
+```python
+from pyFERN import SFTDataset, sft_collate_fn
+from torch.utils.data import DataLoader
+
+dataset = SFTDataset("data/train.parquet", max_seq_len=2048)
+loader = DataLoader(dataset, batch_size=4, shuffle=True, collate_fn=sft_collate_fn)
+```
+
+Loads pretokenized samples from Parquet or JSONL files with prompt masking (`labels=-100`).
 
 ### `SlidingShardLoader`
 
@@ -410,6 +450,22 @@ pyfern train-jax \
   --save-interval-minutes 60 \
   --val-interval-steps 1000 \
   --hf-repo-id "user/fern-checkpoints" \
+  --telegram-token "$TG_TOKEN" \
+  --telegram-chat-id "$TG_CHAT_ID"
+
+# Fine-tune with LoRA
+pyfern train-lora \
+  --model checkpoints/fern_pla_0.4b \
+  --data data/unified_reasoning/train.parquet \
+  --lora-r 64 \
+  --lora-alpha 128 \
+  --lr 2e-4 \
+  --batch-size 4 \
+  --accum-steps 4 \
+  --epochs 1 \
+  --mixed-precision fp16 \
+  --hf-repo-id "user/fern-lora-adapter" \
+  --merge-on-end \
   --telegram-token "$TG_TOKEN" \
   --telegram-chat-id "$TG_CHAT_ID"
 ```

@@ -107,6 +107,14 @@ class TrainingConfig:
     # Dynamic Streaming
     sliding_window_shards: int = 2
 
+    # LoRA Fine-Tuning
+    lora_r: int = 64
+    lora_alpha: float = 128.0
+    lora_dropout: float = 0.05
+    lora_merge_on_end: bool = True
+    grad_accum_steps: int = 1
+    max_seq_len: int = 2048
+
     @classmethod
     def from_json(cls, path: str) -> "TrainingConfig":
         with open(path, "r", encoding="utf-8") as f:

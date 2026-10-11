@@ -189,6 +189,54 @@ def cli_train_jax(args):
     trainer.train(args.data, save_path=args.save_path)
 
 
+def cli_train_lora(args):
+    from .checkpoint import from_pretrained
+    from .lora_trainer import FERNLoRATrainer
+
+    tok = None
+    tok_path = args.tokenizer or args.model
+    try:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(tok_path, trust_remote_code=True, token=args.hf_token)
+    except Exception:
+        pass
+
+    model = from_pretrained(args.model, device=args.device, token=args.hf_token)
+
+    save_sec = args.save_interval_seconds
+    if getattr(args, "save_interval_minutes", None):
+        save_sec = args.save_interval_minutes * 60
+
+    train_cfg = TrainingConfig(
+        batch_size=args.batch_size,
+        lr=args.lr,
+        log_interval=args.log_interval,
+        device=args.device,
+        save_interval_steps=args.save_interval_steps,
+        save_interval_seconds=save_sec,
+        checkpoint_dir=args.checkpoint_dir,
+        max_checkpoints_to_keep=args.max_checkpoints,
+        hf_repo_id=args.hf_repo_id,
+        hf_private=args.hf_private,
+        hf_token=args.hf_token,
+        hf_push_on_save=args.hf_push_on_save,
+        telegram_token=getattr(args, "telegram_token", None),
+        telegram_chat_id=getattr(args, "telegram_chat_id", None),
+        val_interval_steps=getattr(args, "val_interval_steps", None),
+        val_steps=getattr(args, "val_steps", 50),
+        mixed_precision=args.precision,
+        lora_r=args.r,
+        lora_alpha=args.alpha,
+        lora_dropout=args.dropout,
+        lora_merge_on_end=args.merge,
+        grad_accum_steps=args.grad_accum,
+        max_seq_len=args.max_len,
+    )
+
+    trainer = FERNLoRATrainer(model=model, config=train_cfg, tokenizer=tok)
+    trainer.train(args.data, epochs=args.epochs, val_dataset=args.val_data)
+
+
 def add_training_checkpoint_args(p):
     p.add_argument("--save-interval-steps", type=int, default=None, help="Save checkpoint every N steps")
     p.add_argument("--save-interval-seconds", type=int, default=None, help="Save checkpoint every N seconds")
@@ -259,6 +307,27 @@ def main():
     jax_p.add_argument("--log-interval", type=int, default=20, help="Logging step interval")
     add_training_checkpoint_args(jax_p)
 
+    # train-lora
+    lora_p = subparsers.add_parser("train-lora", help="Fine-tune a model with native LoRA")
+    lora_p.add_argument("--model", required=True, help="Base model checkpoint path or HF repo ID")
+    lora_p.add_argument("--data", required=True, help="Path to parquet, jsonl, or dataset")
+    lora_p.add_argument("--val-data", default=None, help="Optional validation dataset path")
+    lora_p.add_argument("--tokenizer", default=None, help="Tokenizer path or model directory")
+    lora_p.add_argument("--epochs", type=int, default=1, help="Number of training epochs")
+    lora_p.add_argument("--batch-size", type=int, default=2, help="Batch size per step")
+    lora_p.add_argument("--grad-accum", type=int, default=8, help="Gradient accumulation steps")
+    lora_p.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
+    lora_p.add_argument("--r", type=int, default=64, help="LoRA rank")
+    lora_p.add_argument("--alpha", type=float, default=128.0, help="LoRA alpha scaling")
+    lora_p.add_argument("--dropout", type=float, default=0.05, help="LoRA dropout")
+    lora_p.add_argument("--max-len", type=int, default=2048, help="Max sequence length")
+    lora_p.add_argument("--precision", choices=["no", "fp16", "bf16"], default="fp16", help="Mixed precision mode")
+    lora_p.add_argument("--merge", action="store_true", default=True, help="Merge adapter weights into base model after training")
+    lora_p.add_argument("--no-merge", dest="merge", action="store_false", help="Do not merge adapter after training")
+    lora_p.add_argument("--log-interval", type=int, default=10, help="Logging step interval")
+    lora_p.add_argument("--device", default=None, help="Device to run on (cuda/cpu)")
+    add_training_checkpoint_args(lora_p)
+
     args = parser.parse_args()
     if args.command == "info":
         cli_info()
@@ -270,6 +339,8 @@ def main():
         cli_train(args)
     elif args.command == "train-jax":
         cli_train_jax(args)
+    elif args.command == "train-lora":
+        cli_train_lora(args)
     else:
         parser.print_help()
 

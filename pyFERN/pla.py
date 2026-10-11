@@ -11,26 +11,26 @@ class PredictiveLinearAttention(nn.Module):
         self.layer_id = layer_id
         self.h = num_heads
         self.n = head_dim
-        self.x_r = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_w = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_k = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_v = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_a = nn.Parameter(torch.empty(1, 1, d_model))
-        self.x_g = nn.Parameter(torch.empty(1, 1, d_model))
-        self.w0 = nn.Parameter(torch.empty(1, 1, d_model))
-        self.w1 = nn.Parameter(torch.empty(d_model, 64))
-        self.w2 = nn.Parameter(torch.empty(64, d_model))
-        self.a0 = nn.Parameter(torch.empty(1, 1, d_model))
-        self.a1 = nn.Parameter(torch.empty(d_model, 64))
-        self.a2 = nn.Parameter(torch.empty(64, d_model))
-        self.v0 = nn.Parameter(torch.empty(1, 1, d_model))
-        self.v1 = nn.Parameter(torch.empty(d_model, 32))
-        self.v2 = nn.Parameter(torch.empty(32, d_model))
-        self.g1 = nn.Parameter(torch.empty(d_model, 128))
-        self.g2 = nn.Parameter(torch.empty(128, d_model))
-        self.k_k = nn.Parameter(torch.empty(1, 1, d_model))
-        self.k_a = nn.Parameter(torch.empty(1, 1, d_model))
-        self.r_k = nn.Parameter(torch.empty(num_heads, head_dim))
+        self.x_r = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.x_w = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.x_k = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.x_v = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.x_a = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.x_g = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.w0 = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.w1 = nn.Parameter(torch.randn(d_model, 64) * 0.02)
+        self.w2 = nn.Parameter(torch.zeros(64, d_model))
+        self.a0 = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.a1 = nn.Parameter(torch.randn(d_model, 64) * 0.02)
+        self.a2 = nn.Parameter(torch.zeros(64, d_model))
+        self.v0 = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.v1 = nn.Parameter(torch.randn(d_model, 32) * 0.02)
+        self.v2 = nn.Parameter(torch.zeros(32, d_model))
+        self.g1 = nn.Parameter(torch.randn(d_model, 128) * 0.02)
+        self.g2 = nn.Parameter(torch.zeros(128, d_model))
+        self.k_k = nn.Parameter(torch.ones(1, 1, d_model))
+        self.k_a = nn.Parameter(torch.ones(1, 1, d_model))
+        self.r_k = nn.Parameter(torch.zeros(num_heads, head_dim))
 
         self.w_q = nn.Linear(d_model, d_model, bias=False)
         self.w_k = nn.Linear(d_model, d_model, bias=False)
@@ -69,9 +69,10 @@ class PredictiveLinearAttention(nn.Module):
         w = torch.exp(-0.606531 * torch.sigmoid(w)).view(h, n)
 
         out, state = pla_step(r, w, k, v, a, kk, state)
-        out = F.group_norm(out.view(1, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(h * n)
-        out = out + ((r * k * self.r_k).sum(dim=-1, keepdim=True) * v).view(h * n)
-        return self.w_out(out * g), x, state, v_first, 0.0
+        normed = F.group_norm(out.view(1, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(h * n)
+        bonus = ((r * k * self.r_k).sum(dim=-1, keepdim=True) * v).view(h * n)
+        fe_pla = ((v.view(h * n) - normed) ** 2).mean()
+        return self.w_out((normed + bonus) * g), x, state, v_first, fe_pla
 
     def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, float, Optional[torch.Tensor]]:
         b, t, d = x.shape
@@ -108,4 +109,5 @@ class PredictiveLinearAttention(nn.Module):
         normed = F.group_norm(raw.view(b * t, h * n), num_groups=h, weight=self.ln_x.weight, bias=self.ln_x.bias, eps=64e-5).view(b, t, h * n)
         bonus = ((r * k * self.r_k.view(h, n)).sum(dim=-1, keepdim=True) * v).view(b, t, h * n)
         out = self.w_out((normed + bonus) * g)
-        return out, 0.0, v_first
+        fe_pla = ((v.view(b, t, h * n) - normed) ** 2).mean()
+        return out, fe_pla, v_first
