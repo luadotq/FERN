@@ -175,6 +175,22 @@ def chunkwise_pla(
     b, t, h, n = r.shape
     dt = r.dtype
     w, k, v, a, kk = w.to(dt), k.to(dt), v.to(dt), a.to(dt), kk.to(dt)
+
+    if r.is_cuda and s is None:
+        try:
+            from .triton_pla import TritonPLAFunction, TRITON_AVAILABLE
+            if TRITON_AVAILABLE:
+                out, final_s = TritonPLAFunction.apply(r, w, k, v, a, kk)
+                if with_bonus and r_k is not None:
+                    bonus = (r * k * r_k.to(dt).view(1, 1, h, n)).sum(dim=-1, keepdim=True) * v
+                    out = out + bonus.view(b, t, h * n)
+                return out, final_s
+        except Exception as e:
+            global _triton_warn
+            if '_triton_warn' not in globals():
+                _triton_warn = True
+                print(f"[pyFERN Warning] Triton kernel fallback: {e}", flush=True)
+
     out, final_s = FastPLAFunction.apply(r, w, k, v, a, kk, s, chunk_size)
     if with_bonus and r_k is not None:
         bonus = (r * k * r_k.to(dt).view(1, 1, h, n)).sum(dim=-1, keepdim=True) * v
