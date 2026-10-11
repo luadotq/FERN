@@ -105,7 +105,7 @@ class PredictiveLinearAttention(nn.Module):
             v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2)
         v = v.view(b, t, h, n)
 
-        raw, _ = chunkwise_pla(r, w, k, v, a, kk, chunk_size=32, with_bonus=False)
+        raw, _ = chunkwise_pla(r, w, k, v, a, kk, chunk_size=64, with_bonus=False)
         normed = F.group_norm(raw.view(b * t, h * n), num_groups=h, weight=self.ln_x.weight.to(dtype=raw.dtype), bias=self.ln_x.bias.to(dtype=raw.dtype) if self.ln_x.bias is not None else None, eps=64e-5).view(b, t, h * n)
         bonus = ((r * k * self.r_k.view(h, n)).sum(dim=-1, keepdim=True) * v).view(b, t, h * n)
         out = self.w_out((normed + bonus) * g)
