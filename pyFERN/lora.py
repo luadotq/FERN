@@ -103,15 +103,32 @@ def save_adapter(model: nn.Module, save_dir: str, r: int = 64, alpha: float = 12
         json.dump(cfg, f, indent=2)
 
 
-def load_adapter(model: nn.Module, save_dir: str):
-    weights = load_file(os.path.join(save_dir, "adapter_model.safetensors"))
+def load_adapter(model: nn.Module, save_dir: str, merge: bool = False):
+    cfg_file = os.path.join(save_dir, "adapter_config.json")
+    r, alpha = 64, 128.0
+    if os.path.exists(cfg_file):
+        with open(cfg_file, "r", encoding="utf-8") as f:
+            c = json.load(f)
+            r = c.get("r", r)
+            alpha = c.get("alpha", alpha)
+
+    if not any(isinstance(m, LoRALinear) for m in model.modules()):
+        inject_lora(model, r=r, alpha=alpha)
+
+    weight_file = os.path.join(save_dir, "adapter_model.safetensors")
+    if not os.path.exists(weight_file):
+        weight_file = os.path.join(save_dir, "model.safetensors")
+
+    weights = load_file(weight_file)
     for name, module in model.named_modules():
         if isinstance(module, LoRALinear):
             a_key = f"{name}.lora_a"
             b_key = f"{name}.lora_b"
             if a_key in weights and b_key in weights:
-                module.lora_a.data.copy_(weights[a_key])
-                module.lora_b.data.copy_(weights[b_key])
+                module.lora_a.data.copy_(weights[a_key].to(module.lora_a.device))
+                module.lora_b.data.copy_(weights[b_key].to(module.lora_b.device))
+            if merge:
+                module.merge()
 
 
 def merge_and_save(model: nn.Module, save_dir: str):
