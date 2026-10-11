@@ -39,7 +39,7 @@ def get_deepspeed_config(config: TrainingConfig, world_size: int = 1) -> Dict[st
 
     ds_config = {
         "train_micro_batch_size_per_gpu": config.batch_size,
-        "gradient_accumulation_steps": 1,
+        "gradient_accumulation_steps": getattr(config, "grad_accum_steps", 1),
         "gradient_clipping": config.grad_clip,
         "optimizer": {
             "type": "AdamW",
@@ -83,6 +83,7 @@ def get_deepspeed_config(config: TrainingConfig, world_size: int = 1) -> Dict[st
 def setup_distributed_engine(
     model: nn.Module,
     config: TrainingConfig,
+    model_parameters: Optional[Any] = None,
 ) -> Tuple[nn.Module, Optional[Any], Optional[Any]]:
     rank, world_size, local_rank = init_distributed(config.distributed_backend)
 
@@ -93,9 +94,10 @@ def setup_distributed_engine(
             raise ImportError("DeepSpeed is not installed. Install it via `pip install deepspeed`.")
 
         ds_config = get_deepspeed_config(config, world_size)
+        params = model_parameters if model_parameters is not None else [p for p in model.parameters() if p.requires_grad]
         engine, optimizer, _, lr_scheduler = deepspeed.initialize(
             model=model,
-            model_parameters=model.parameters(),
+            model_parameters=params,
             config=ds_config,
         )
         return engine, optimizer, lr_scheduler

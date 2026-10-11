@@ -114,6 +114,7 @@ class TrainingConfig:
     lora_merge_on_end: bool = True
     grad_accum_steps: int = 1
     max_seq_len: int = 2048
+    gradient_checkpointing: bool = True
 
     @classmethod
     def from_json(cls, path: str) -> "TrainingConfig":

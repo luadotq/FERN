@@ -231,6 +231,10 @@ def cli_train_lora(args):
         lora_merge_on_end=args.merge,
         grad_accum_steps=args.grad_accum,
         max_seq_len=args.max_len,
+        use_deepspeed=getattr(args, "use_deepspeed", False),
+        zero_stage=getattr(args, "zero_stage", 2),
+        deepspeed_config=getattr(args, "deepspeed_config", None),
+        gradient_checkpointing=getattr(args, "gradient_checkpointing", True),
     )
 
     trainer = FERNLoRATrainer(model=model, config=train_cfg, tokenizer=tok)
@@ -326,6 +330,11 @@ def main():
     lora_p.add_argument("--no-merge", dest="merge", action="store_false", help="Do not merge adapter after training")
     lora_p.add_argument("--log-interval", type=int, default=10, help="Logging step interval")
     lora_p.add_argument("--device", default=None, help="Device to run on (cuda/cpu)")
+    lora_p.add_argument("--deepspeed", "--use-deepspeed", dest="use_deepspeed", action="store_true", default=False, help="Enable DeepSpeed ZeRO engine")
+    lora_p.add_argument("--zero-stage", type=int, default=2, help="DeepSpeed ZeRO stage (1, 2, or 3)")
+    lora_p.add_argument("--deepspeed-config", default=None, help="Custom DeepSpeed JSON config path")
+    lora_p.add_argument("--gradient-checkpointing", dest="gradient_checkpointing", action="store_true", default=True, help="Enable gradient checkpointing")
+    lora_p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false", help="Disable gradient checkpointing")
     add_training_checkpoint_args(lora_p)
 
     args = parser.parse_args()

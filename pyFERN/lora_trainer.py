@@ -13,7 +13,7 @@ from .data import SFTDataset, sft_collate_fn
 from .lora import inject_lora, save_adapter, merge_and_save
 from .checkpoint import push_to_hub
 from .telemetry import TelegramMonitor, MetricsLogger, TrainingControl, setup_emergency_handler
-from .distributed import is_main_process
+from .distributed import setup_distributed_engine, is_main_process
 
 
 class FERNLoRATrainer:
@@ -37,17 +37,28 @@ class FERNLoRATrainer:
         )
         self.model = model.to(self.device)
 
-        trainable = [p for p in self.model.parameters() if p.requires_grad]
-        self.optimizer = torch.optim.AdamW(
-            trainable,
-            lr=self.config.lr,
-            betas=(self.config.adam_b1, self.config.adam_b2),
-            eps=self.config.adam_eps,
-            weight_decay=self.config.weight_decay,
-        )
+        if getattr(self.config, "gradient_checkpointing", True):
+            self.model.config.gradient_checkpointing = True
 
-        use_fp16 = self.config.mixed_precision in ("fp16", "bf16") and ("cuda" in self.device)
-        self.scaler = torch.amp.GradScaler('cuda', enabled=use_fp16)
+        if self.config.use_deepspeed:
+            trainable = [p for p in self.model.parameters() if p.requires_grad]
+            self.engine, self.optimizer, self.ds_scheduler = setup_distributed_engine(
+                self.model, self.config, model_parameters=trainable
+            )
+            self.scaler = None
+        else:
+            self.engine = None
+            trainable = [p for p in self.model.parameters() if p.requires_grad]
+            self.optimizer = torch.optim.AdamW(
+                trainable,
+                lr=self.config.lr,
+                betas=(self.config.adam_b1, self.config.adam_b2),
+                eps=self.config.adam_eps,
+                weight_decay=self.config.weight_decay,
+            )
+            use_fp16 = self.config.mixed_precision in ("fp16", "bf16") and ("cuda" in self.device)
+            self.scaler = torch.amp.GradScaler('cuda', enabled=use_fp16)
+
         self.crit = nn.CrossEntropyLoss(ignore_index=-100)
 
         if is_main_process():
@@ -65,8 +76,20 @@ class FERNLoRATrainer:
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: int = 1) -> Tuple[float, float, float]:
         inp = x.to(self.device)
         tgt = y.to(self.device)
-        use_fp16 = self.config.mixed_precision in ("fp16", "bf16") and ("cuda" in self.device)
 
+        if self.config.use_deepspeed:
+            self.engine.train()
+            active_m = self.engine.module if hasattr(self.engine, "module") else self.engine
+            logits, fe = active_m.forward_parallel(inp)
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = tgt[:, 1:].contiguous()
+            ce = self.crit(shift_logits.view(-1, self.model.config.vocab_size), shift_labels.view(-1))
+            loss = ce + self.config.fe_weight * fe
+            self.engine.backward(loss)
+            self.engine.step()
+            return loss.item(), ce.item(), fe.item()
+
+        use_fp16 = self.config.mixed_precision in ("fp16", "bf16") and ("cuda" in self.device)
         with torch.amp.autocast('cuda', enabled=use_fp16):
             logits, fe = self.model.forward_parallel(inp)
             shift_logits = logits[:, :-1, :].contiguous()
@@ -78,10 +101,11 @@ class FERNLoRATrainer:
         return loss.item() * accum, ce.item(), fe.item()
 
     def evaluate(self, val_loader: DataLoader, val_steps: int = 50) -> Tuple[float, float, float, float, float]:
-        self.model.eval()
+        active_m = self.engine.module if (self.engine and hasattr(self.engine, "module")) else self.model
+        active_m.eval()
         tot_loss, tot_ce, tot_fe = 0.0, 0.0, 0.0
         steps = min(val_steps, len(val_loader))
-        use_fp16 = self.config.mixed_precision in ("fp16", "bf16") and ("cuda" in self.device)
+        use_fp16 = self.config.mixed_precision in ("fp16", "bf16") and ("cuda" in self.device) and (not self.config.use_deepspeed)
 
         with torch.no_grad():
             for i, (x, y) in enumerate(val_loader):
@@ -89,7 +113,7 @@ class FERNLoRATrainer:
                     break
                 inp, tgt = x.to(self.device), y.to(self.device)
                 with torch.amp.autocast('cuda', enabled=use_fp16):
-                    logits, fe = self.model.forward_parallel(inp)
+                    logits, fe = active_m.forward_parallel(inp)
                     shift_logits = logits[:, :-1, :].contiguous()
                     shift_labels = tgt[:, 1:].contiguous()
                     ce = self.crit(shift_logits.view(-1, self.model.config.vocab_size), shift_labels.view(-1))
@@ -256,26 +280,30 @@ class FERNLoRATrainer:
                 tot, ce, fe = self.train_step(x, y, accum=accum)
                 cum_tok += x.numel()
 
-                if (it + 1) % accum == 0 or (it + 1) == len(loader):
-                    self.scaler.unscale_(self.optimizer)
-                    if cfg.grad_clip > 0:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    self.optimizer.zero_grad()
+                if not cfg.use_deepspeed:
+                    if (it + 1) % accum == 0 or (it + 1) == len(loader):
+                        self.scaler.unscale_(self.optimizer)
+                        if cfg.grad_clip > 0:
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                        self.optimizer.zero_grad()
+                        step += 1
+
+                        cur_lr = self.get_lr(step, total_steps)
+                        for g in self.optimizer.param_groups:
+                            g["lr"] = cur_lr
+                else:
                     step += 1
+                    cur_lr = self.engine.get_lr()[0] if hasattr(self.engine, "get_lr") else cur_lr
 
-                    cur_lr = self.get_lr(step, total_steps)
-                    for g in self.optimizer.param_groups:
-                        g["lr"] = cur_lr
-
-                    if step % cfg.log_interval == 0 and is_main_process():
-                        spd = cum_tok / max(0.1, time.time() - start_time)
-                        print(f"Epoch {ep+1}/{epochs} | Step {step}/{total_steps} | CE: {ce:.4f} | FE: {fe:.4f} | LR: {cur_lr:.2e} | Speed: {spd:.0f} tok/s")
-                        logger.log({
-                            "step": step, "tokens": cum_tok, "train_loss": tot, "ce_loss": ce, "fe_loss": fe,
-                            "lr": cur_lr, "speed": spd, "elapsed": time.time() - start_time,
-                        })
+                if step % cfg.log_interval == 0 and is_main_process():
+                    spd = cum_tok / max(0.1, time.time() - start_time)
+                    print(f"Epoch {ep+1}/{epochs} | Step {step}/{total_steps} | CE: {ce:.4f} | FE: {fe:.4f} | LR: {cur_lr:.2e} | Speed: {spd:.0f} tok/s")
+                    logger.log({
+                        "step": step, "tokens": cum_tok, "train_loss": tot, "ce_loss": ce, "fe_loss": fe,
+                        "lr": cur_lr, "speed": spd, "elapsed": time.time() - start_time,
+                    })
 
                     # Periodic validation
                     trigger_val = (val_loader is not None) and (control.request_val or (cfg.val_interval_steps and step % cfg.val_interval_steps == 0))
