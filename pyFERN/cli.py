@@ -232,7 +232,7 @@ def cli_train_lora(args):
         lora_dropout=args.dropout,
         lora_merge_on_end=args.merge,
         grad_accum_steps=args.grad_accum,
-        max_seq_len=args.max_len,
+        max_seq_len=args.max_len if (args.max_len and args.max_len > 0) else None,
         use_deepspeed=getattr(args, "use_deepspeed", False),
         zero_stage=getattr(args, "zero_stage", 2),
         deepspeed_config=getattr(args, "deepspeed_config", None),
@@ -330,7 +330,8 @@ def main():
     lora_p.add_argument("--r", "--lora-r", dest="r", type=int, default=64, help="LoRA rank")
     lora_p.add_argument("--alpha", "--lora-alpha", dest="alpha", type=float, default=128.0, help="LoRA alpha scaling")
     lora_p.add_argument("--dropout", "--lora-dropout", dest="dropout", type=float, default=0.05, help="LoRA dropout")
-    lora_p.add_argument("--max-len", "--max-seq-len", dest="max_len", type=int, default=2048, help="Max sequence length")
+    lora_p.add_argument("--max-len", "--max-seq-len", dest="max_len", type=int, default=0, help="Max sequence length (0 for unconstrained)")
+    lora_p.add_argument("--win-size", type=int, default=0, help="Window size for sliding window streaming (0 to disable)")
     lora_p.add_argument("--precision", "--mixed-precision", dest="precision", choices=["no", "fp16", "bf16"], default="fp16", help="Mixed precision mode")
     lora_p.add_argument("--merge", "--merge-on-end", dest="merge", action="store_true", default=True, help="Merge adapter weights into base model after training")
     lora_p.add_argument("--no-merge", dest="merge", action="store_false", help="Do not merge adapter after training")

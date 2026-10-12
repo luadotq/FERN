@@ -47,6 +47,14 @@ class DLPTrainer:
 
     def _step_vla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
         last_l = 0.0
+        y_flat = y.reshape(-1)
+        mask = (y_flat != -100)
+        n_val = int(mask.sum().item())
+        if n_val == 0:
+            return 0.0, 0.0, 0.0
+        val_idx = torch.nonzero(mask).squeeze(-1)
+        y_val = y_flat[val_idx]
+
         with torch.no_grad():
             h = self.m.encoder(x)
             for i, b in enumerate(self.m.blocks):
@@ -62,15 +70,23 @@ class DLPTrainer:
 
                 h_flat = h_next.reshape(bt, d)
                 logits = h_flat @ self.heads[i].t()
-                prob = F.softmax(logits, dim=-1)
-                e = F.one_hot(y.reshape(-1), v).float() - prob
                 
                 if i == len(self.m.blocks) - 1:
-                    last_l = F.cross_entropy(logits, y.reshape(-1)).item()
+                    last_l = F.cross_entropy(logits[val_idx], y_val).item()
 
-                gh = (e.t() @ h_flat) / bt
+                prob = F.softmax(logits, dim=-1)
+                prob_val = prob[val_idx]
+                h_val = h_flat[val_idx]
+
+                prob_h = prob_val @ self.heads[i]
+                delta = torch.zeros_like(h_flat)
+                delta[val_idx] = self.heads[i][y_val] - prob_h
+                delta = F.rms_norm(delta, (d,), eps=1e-5)
+
+                gh = - (prob_val.t() @ h_val)
+                gh.index_add_(0, y_val, h_val)
+                gh = gh / n_val
                 self.heads[i] += self.lr * gh / (torch.norm(gh) + 1e-6) * (v * d)**0.5 * 0.05
-                delta = e @ self.heads[i]
 
                 gd = (delta.t() @ mlp_act.reshape(bt, -1)) / bt
                 b.w_down.weight += self.lr * gd / (torch.norm(gd) + 1e-6) * b.w_down.weight.numel()**0.5 * 0.01
@@ -95,6 +111,14 @@ class DLPTrainer:
         beta = self.beta
         last_l = 0.0
         
+        y_flat = y.reshape(-1)
+        mask = (y_flat != -100)
+        n_val = int(mask.sum().item())
+        if n_val == 0:
+            return 0.0, 0.0, 0.0
+        val_idx = torch.nonzero(mask).squeeze(-1)
+        y_val = y_flat[val_idx]
+
         with torch.no_grad():
             h = self.m.encoder(x)
             vf = None
@@ -105,16 +129,24 @@ class DLPTrainer:
                 h_norm = F.rms_norm(h_next, (d,), eps=1e-5)
                 h_flat = h_norm.reshape(bt, d)
                 logits = h_flat @ self.heads[i].t()
-                prob = F.softmax(logits, dim=-1)
-                e = F.one_hot(y.reshape(-1), v).float() - prob
                 
                 if i == len(self.m.blocks) - 1:
-                    last_l = F.cross_entropy(logits, y.reshape(-1)).item()
+                    last_l = F.cross_entropy(logits[val_idx], y_val).item()
 
-                gh = (e.t() @ h_flat) / bt
+                prob = F.softmax(logits, dim=-1)
+                prob_val = prob[val_idx]
+                h_val = h_flat[val_idx]
+
+                prob_h = prob_val @ self.heads[i]
+                delta = torch.zeros_like(h_flat)
+                delta[val_idx] = self.heads[i][y_val] - prob_h
+                delta = F.rms_norm(delta, (d,), eps=1e-5)
+
+                gh = - (prob_val.t() @ h_val)
+                gh.index_add_(0, y_val, h_val)
+                gh = gh / n_val
                 self.mom_h[i] = beta * self.mom_h[i] + (1 - beta) * (gh / (torch.norm(gh) + 1e-6))
                 self.heads[i] += lr * self.mom_h[i] * (v * d)**0.5 * 0.08
-                delta = F.rms_norm(e @ self.heads[i], (d,), eps=1e-5)
 
                 xx2 = b.ln2(h)
                 dx = torch.cat([torch.zeros_like(xx2[:, :1]), xx2[:, :-1] - xx2[:, 1:]], dim=1)

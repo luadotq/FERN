@@ -54,7 +54,21 @@ class DLPLoRATrainer:
         ma.copy_(self.beta * ma + (1.0 - self.beta) * nga)
         layer.lora_a.data.add_(lr * ma * (layer.lora_a.numel()**0.5) * 0.02)
 
-    def train_step(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[float, float, float]:
+    def train_step(self, x: torch.Tensor, y: torch.Tensor, win_size: Optional[int] = None) -> Tuple[float, float, float]:
+        if win_size and x.shape[1] > win_size:
+            tot_l, tot_ce = 0.0, 0.0
+            steps = 0
+            for start in range(0, x.shape[1], win_size):
+                end = min(x.shape[1], start + win_size)
+                xw, yw = x[:, start:end], y[:, start:end]
+                l, ce, fe = self._train_chunk(xw, yw)
+                tot_l += l
+                tot_ce += ce
+                steps += 1
+            return tot_l / max(1, steps), tot_ce / max(1, steps), 0.0
+        return self._train_chunk(x, y)
+
+    def _train_chunk(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[float, float, float]:
         bt = x.numel()
         v = self.m.config.vocab_size
         d = self.m.config.d_model
@@ -65,6 +79,15 @@ class DLPLoRATrainer:
 
     def _step_vla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
         last_l = 0.0
+        lr = self.lr
+        y_flat = y.reshape(-1)
+        mask = (y_flat != -100)
+        n_val = int(mask.sum().item())
+        if n_val == 0:
+            return 0.0, 0.0, 0.0
+        val_idx = torch.nonzero(mask).squeeze(-1)
+        y_val = y_flat[val_idx]
+
         with torch.no_grad():
             h = self.m.encoder(x)
             for i, b in enumerate(self.m.blocks):
@@ -80,25 +103,33 @@ class DLPLoRATrainer:
                 
                 h_flat = h_next.reshape(bt, d)
                 logits = h_flat @ self.heads[i].t()
-                prob = F.softmax(logits, dim=-1)
-                e = F.one_hot(y.reshape(-1), v).float() - prob
                 
                 if i == len(self.m.blocks) - 1:
-                    last_l = F.cross_entropy(logits, y.reshape(-1)).item()
+                    last_l = F.cross_entropy(logits[val_idx], y_val).item()
                 
-                gh = (e.t() @ h_flat) / bt
+                prob = F.softmax(logits, dim=-1)
+                prob_val = prob[val_idx]
+                h_val = h_flat[val_idx]
+                
+                prob_h = prob_val @ self.heads[i]
+                delta = torch.zeros_like(h_flat)
+                delta[val_idx] = self.heads[i][y_val] - prob_h
+                delta = F.rms_norm(delta, (d,), eps=1e-5)
+                
+                gh = - (prob_val.t() @ h_val)
+                gh.index_add_(0, y_val, h_val)
+                gh = gh / n_val
                 ngh = gh / (torch.norm(gh) + 1e-6)
                 self.mom_h[i] = self.beta * self.mom_h[i] + (1.0 - self.beta) * ngh
-                self.heads[i] += self.lr * self.mom_h[i] * (v * d)**0.5 * 0.05
-                delta = F.rms_norm(e @ self.heads[i], (d,), eps=1e-5)
+                self.heads[i] += lr * self.mom_h[i] * (v * d)**0.5 * 0.05
                 
                 k_out = f"blocks.{i}.vla.w_out"
                 if k_out in self.inps and isinstance(b.vla.w_out, LoRALinear):
-                    self._upd_lora(b.vla.w_out, self.inps[k_out].reshape(bt, -1), delta, k_out, self.lr)
+                    self._upd_lora(b.vla.w_out, self.inps[k_out].reshape(bt, -1), delta, k_out, lr)
                     
                 k_down = f"blocks.{i}.w_down"
                 if k_down in self.inps and isinstance(b.w_down, LoRALinear):
-                    self._upd_lora(b.w_down, self.inps[k_down].reshape(bt, -1), delta, k_down, self.lr)
+                    self._upd_lora(b.w_down, self.inps[k_down].reshape(bt, -1), delta, k_down, lr)
                 
                 h = h_next
         return last_l, last_l, 0.0
@@ -106,6 +137,14 @@ class DLPLoRATrainer:
     def _step_pla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
         last_l = 0.0
         lr = self.lr
+        y_flat = y.reshape(-1)
+        mask = (y_flat != -100)
+        n_val = int(mask.sum().item())
+        if n_val == 0:
+            return 0.0, 0.0, 0.0
+        val_idx = torch.nonzero(mask).squeeze(-1)
+        y_val = y_flat[val_idx]
+
         with torch.no_grad():
             h = self.m.encoder(x)
             vf = None
@@ -115,17 +154,26 @@ class DLPLoRATrainer:
                 
                 h_flat = F.rms_norm(h_next, (d,), eps=1e-5).reshape(bt, d)
                 logits = h_flat @ self.heads[i].t()
-                prob = F.softmax(logits, dim=-1)
-                e = F.one_hot(y.reshape(-1), v).float() - prob
                 
                 if i == len(self.m.blocks) - 1:
-                    last_l = F.cross_entropy(logits, y.reshape(-1)).item()
+                    last_l = F.cross_entropy(logits[val_idx], y_val).item()
                     
-                gh = (e.t() @ h_flat) / bt
+                prob = F.softmax(logits, dim=-1)
+                prob_val = prob[val_idx]
+                h_val = h_flat[val_idx]
+                
+                # O(1) error projection without dense one-hot
+                prob_h = prob_val @ self.heads[i]
+                delta = torch.zeros_like(h_flat)
+                delta[val_idx] = self.heads[i][y_val] - prob_h
+                delta = F.rms_norm(delta, (d,), eps=1e-5)
+                
+                gh = - (prob_val.t() @ h_val)
+                gh.index_add_(0, y_val, h_val)
+                gh = gh / n_val
                 ngh = gh / (torch.norm(gh) + 1e-6)
                 self.mom_h[i] = self.beta * self.mom_h[i] + (1.0 - self.beta) * ngh
                 self.heads[i] += lr * self.mom_h[i] * (v * d)**0.5 * 0.05
-                delta = F.rms_norm(e @ self.heads[i], (d,), eps=1e-5)
                 
                 # Direct projection updates with exact runtime activations
                 k_out = f"blocks.{i}.vla.w_out"

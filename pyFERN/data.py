@@ -254,9 +254,9 @@ def prepare_pretokenized_dataset(
 
 
 class SFTDataset:
-    def __init__(self, path: str, tok=None, max_len: int = 2048):
+    def __init__(self, path: str, tok=None, max_len: Optional[int] = None):
         self.tok = tok
-        self.max_len = max_len
+        self.max_len = max_len if (max_len is not None and max_len > 0) else None
         self.data = []
         if path.endswith(".parquet"):
             import pandas as pd
@@ -274,19 +274,25 @@ class SFTDataset:
     def __getitem__(self, idx: int):
         import torch
         row = self.data[idx]
-        if "input_ids" in row and "labels" in row:
-            tids = row["input_ids"][: self.max_len]
-            lbls = row["labels"][: self.max_len]
-            return torch.tensor(tids, dtype=torch.long), torch.tensor(lbls, dtype=torch.long)
-
         txt = row.get("text", "")
-        if self.tok is None:
-            raise ValueError("Tokenizer required when dataset contains un-tokenized text.")
-        tokens = self.tok.encode(txt, add_special_tokens=False) if hasattr(self.tok, "encode") else []
-        if hasattr(tokens, "ids"):
-            tokens = tokens.ids
-        if len(tokens) > self.max_len:
-            tokens = tokens[: self.max_len]
+
+        # If unconstrained and raw text available, tokenize full text to avoid prior 2048 cutoffs
+        if self.max_len is None and txt and self.tok is not None:
+            tokens = self.tok.encode(txt, add_special_tokens=False) if hasattr(self.tok, "encode") else []
+            if hasattr(tokens, "ids"):
+                tokens = tokens.ids
+        elif "input_ids" in row and "labels" in row:
+            tids = row["input_ids"] if self.max_len is None else row["input_ids"][: self.max_len]
+            lbls = row["labels"] if self.max_len is None else row["labels"][: self.max_len]
+            return torch.tensor(tids, dtype=torch.long), torch.tensor(lbls, dtype=torch.long)
+        else:
+            if self.tok is None:
+                raise ValueError("Tokenizer required when dataset contains un-tokenized text.")
+            tokens = self.tok.encode(txt, add_special_tokens=False) if hasattr(self.tok, "encode") else []
+            if hasattr(tokens, "ids"):
+                tokens = tokens.ids
+            if self.max_len is not None and len(tokens) > self.max_len:
+                tokens = tokens[: self.max_len]
 
         input_ids = torch.tensor(tokens, dtype=torch.long)
         labels = input_ids.clone()
