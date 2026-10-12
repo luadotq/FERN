@@ -37,8 +37,14 @@ from .kernels import (
 from .telemetry import TelegramMonitor, MetricsLogger, TrainingControl, setup_emergency_handler
 from .streaming import SlidingShardLoader
 from .lora import LoRALinear, inject_lora, save_adapter, load_adapter, merge_and_save
+from . import exp
+from .exp import DLPTrainer, DLPConfig, DLPLoRATrainer
 
 __all__ = [
+    "exp",
+    "DLPTrainer",
+    "DLPConfig",
+    "DLPLoRATrainer",
     "ModelConfig",
     "TrainingConfig",
     "FERNModel",

@@ -61,6 +61,10 @@ class FERNLoRATrainer:
 
         self.crit = nn.CrossEntropyLoss(ignore_index=-100)
 
+        if getattr(self.config, "use_exp_dlp", False):
+            from .exp.dlp_lora import DLPLoRATrainer
+            self.dlp_trainer = DLPLoRATrainer(self.model, lr=getattr(self.config, "dlp_lr", 0.05))
+
         if is_main_process():
             pct = 100 * self.trainable_params / max(1, self.total_params)
             print(f"LoRA Initialized: {self.trainable_params:,} / {self.total_params:,} trainable params ({pct:.2f}%)", flush=True)
@@ -76,6 +80,9 @@ class FERNLoRATrainer:
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: int = 1) -> Tuple[float, float, float]:
         inp = x.to(self.device)
         tgt = y.to(self.device)
+
+        if getattr(self.config, "use_exp_dlp", False):
+            return self.dlp_trainer.train_step(inp, tgt)
 
         if self.config.use_deepspeed:
             self.engine.train()

@@ -81,6 +81,10 @@ class TrainingConfig:
     deepspeed_config: Optional[Union[str, Dict[str, Any]]] = None
     distributed_backend: str = "nccl"
 
+    # Experimental Autograd-Free Training (DLP-RMS)
+    use_exp_dlp: bool = False
+    dlp_lr: float = 0.05
+
     # Checkpointing (steps / time)
     save_interval_steps: Optional[int] = None
     save_interval_seconds: Optional[int] = None

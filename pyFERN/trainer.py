@@ -42,6 +42,10 @@ class FERNTrainer:
         else:
             self.optimizer = self.ds_optimizer
 
+        if getattr(self.config, "use_exp_dlp", False):
+            from .exp.dlp import DLPTrainer
+            self.dlp_trainer = DLPTrainer(self.model, lr=getattr(self.config, "dlp_lr", 0.05))
+
     def get_lr(self, step: int, total_steps: int) -> float:
         warmup = self.config.warmup_steps
         min_lr, lr = self.config.min_lr, self.config.lr
@@ -53,6 +57,9 @@ class FERNTrainer:
     def train_step(self, inputs: torch.Tensor, targets: torch.Tensor) -> Tuple[float, float, float]:
         inp = inputs.to(self.device)
         tgt = targets.to(self.device)
+
+        if getattr(self.config, "use_exp_dlp", False):
+            return self.dlp_trainer.train_step(inp, tgt)
 
         if self.config.use_deepspeed:
             self.engine.train()

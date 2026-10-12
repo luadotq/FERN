@@ -125,6 +125,8 @@ def cli_train(args):
         val_interval_steps=getattr(args, "val_interval_steps", None),
         val_steps=getattr(args, "val_steps", 50),
         sliding_window_shards=getattr(args, "sliding_window", 2),
+        use_exp_dlp=getattr(args, "use_exp_dlp", False),
+        dlp_lr=getattr(args, "dlp_lr", 0.05),
     )
 
     model = FERNModel(cfg)
@@ -235,6 +237,8 @@ def cli_train_lora(args):
         zero_stage=getattr(args, "zero_stage", 2),
         deepspeed_config=getattr(args, "deepspeed_config", None),
         gradient_checkpointing=getattr(args, "gradient_checkpointing", True),
+        use_exp_dlp=getattr(args, "use_exp_dlp", False),
+        dlp_lr=getattr(args, "dlp_lr", 0.05),
     )
 
     trainer = FERNLoRATrainer(model=model, config=train_cfg, tokenizer=tok)
@@ -297,6 +301,8 @@ def main():
     train_p.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     train_p.add_argument("--log-interval", type=int, default=20, help="Logging step interval")
     train_p.add_argument("--device", default=None, help="Device to run on")
+    train_p.add_argument("--use-exp-dlp", action="store_true", help="Enable experimental autograd-free DLP-RMS training")
+    train_p.add_argument("--dlp-lr", type=float, default=0.05, help="Learning rate for DLP-RMS")
     add_training_checkpoint_args(train_p)
 
     # train-jax (JAX / TPU)
@@ -335,6 +341,8 @@ def main():
     lora_p.add_argument("--deepspeed-config", default=None, help="Custom DeepSpeed JSON config path")
     lora_p.add_argument("--gradient-checkpointing", dest="gradient_checkpointing", action="store_true", default=True, help="Enable gradient checkpointing")
     lora_p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false", help="Disable gradient checkpointing")
+    lora_p.add_argument("--use-exp-dlp", action="store_true", default=False, help="Enable Autograd-Free Direct Local Projection (DLP) for LoRA")
+    lora_p.add_argument("--dlp-lr", type=float, default=0.05, help="Learning rate for DLP LoRA updates")
     add_training_checkpoint_args(lora_p)
 
     args = parser.parse_args()
