@@ -20,6 +20,8 @@ from .data import (
     JAXDataIterator,
     prepare_pretokenized_dataset,
     SFTDataset,
+    LossPattern,
+    BucketBatchSampler,
     sft_collate_fn,
 )
 from .trainer import FERNTrainer
@@ -95,5 +97,8 @@ __all__ = [
     "save_adapter",
     "load_adapter",
     "merge_and_save",
+    "SFTDataset",
+    "LossPattern",
+    "BucketBatchSampler",
 ]
 

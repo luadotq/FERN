@@ -81,9 +81,15 @@ class TrainingConfig:
     deepspeed_config: Optional[Union[str, Dict[str, Any]]] = None
     distributed_backend: str = "nccl"
 
-    # Experimental Autograd-Free Training (DLP-RMS)
+    # Experimental Autograd-Free Training (DLP-RMS) & Bucketing
     use_exp_dlp: bool = False
     dlp_lr: float = 0.05
+    dlp_win_size: Optional[int] = None
+    use_bucketing: bool = False
+    bucket_boundaries: Optional[List[int]] = None
+    max_tokens_per_batch: Optional[int] = None
+    loss_mode: str = "pattern"
+    loss_pattern: Optional[Any] = None
 
     # Checkpointing (steps / time)
     save_interval_steps: Optional[int] = None

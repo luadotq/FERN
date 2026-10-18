@@ -235,10 +235,14 @@ def cli_train_lora(args):
         max_seq_len=args.max_len if (args.max_len and args.max_len > 0) else None,
         use_deepspeed=getattr(args, "use_deepspeed", False),
         zero_stage=getattr(args, "zero_stage", 2),
-        deepspeed_config=getattr(args, "deepspeed_config", None),
         gradient_checkpointing=getattr(args, "gradient_checkpointing", True),
         use_exp_dlp=getattr(args, "use_exp_dlp", False),
         dlp_lr=getattr(args, "dlp_lr", 0.05),
+        dlp_win_size=getattr(args, "dlp_win_size", None),
+        use_bucketing=getattr(args, "use_bucketing", False),
+        max_tokens_per_batch=getattr(args, "max_tokens_per_batch", None),
+        loss_mode=getattr(args, "loss_mode", "pattern"),
+        loss_pattern=getattr(args, "loss_pattern", None),
     )
 
     trainer = FERNLoRATrainer(model=model, config=train_cfg, tokenizer=tok)
@@ -344,6 +348,11 @@ def main():
     lora_p.add_argument("--no-gradient-checkpointing", dest="gradient_checkpointing", action="store_false", help="Disable gradient checkpointing")
     lora_p.add_argument("--use-exp-dlp", action="store_true", default=False, help="Enable Autograd-Free Direct Local Projection (DLP) for LoRA")
     lora_p.add_argument("--dlp-lr", type=float, default=0.05, help="Learning rate for DLP LoRA updates")
+    lora_p.add_argument("--dlp-win-size", type=int, default=None, help="Chunk window size for DLP training")
+    lora_p.add_argument("--use-bucketing", action="store_true", default=False, help="Enable length bucketing with BucketBatchSampler")
+    lora_p.add_argument("--max-tokens-per-batch", type=int, default=None, help="Dynamic max tokens per batch for bucketing")
+    lora_p.add_argument("--loss-mode", default="pattern", choices=["pattern", "full"], help="Loss calculation mode")
+    lora_p.add_argument("--loss-pattern", default=None, help="Pattern or separator string for loss masking")
     add_training_checkpoint_args(lora_p)
 
     args = parser.parse_args()

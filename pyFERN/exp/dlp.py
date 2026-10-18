@@ -36,7 +36,21 @@ class DLPTrainer:
             self.mom_v = [torch.zeros_like(b.vla.w_v.weight) for b in model.blocks]
             self.mom_h = [torch.zeros_like(hd) for hd in self.heads]
 
-    def train_step(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[float, float, float]:
+    def train_step(self, x: torch.Tensor, y: torch.Tensor, win_size: Optional[int] = None) -> Tuple[float, float, float]:
+        if win_size and x.shape[1] > win_size:
+            tot_l, tot_ce = 0.0, 0.0
+            steps = 0
+            for start in range(0, x.shape[1], win_size):
+                end = min(x.shape[1], start + win_size)
+                xw, yw = x[:, start:end], y[:, start:end]
+                l, ce, fe = self._train_chunk(xw, yw)
+                tot_l += l
+                tot_ce += ce
+                steps += 1
+            return tot_l / max(1, steps), tot_ce / max(1, steps), 0.0
+        return self._train_chunk(x, y)
+
+    def _train_chunk(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[float, float, float]:
         bt = x.numel()
         v = self.m.config.vocab_size
         d = self.m.config.d_model

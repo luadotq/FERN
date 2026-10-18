@@ -82,7 +82,8 @@ class FERNLoRATrainer:
         tgt = y.to(self.device)
 
         if getattr(self.config, "use_exp_dlp", False):
-            return self.dlp_trainer.train_step(inp, tgt)
+            win_size = getattr(self.config, "dlp_win_size", None)
+            return self.dlp_trainer.train_step(inp, tgt, win_size=win_size)
 
         if self.config.use_deepspeed:
             self.engine.train()
@@ -195,23 +196,41 @@ class FERNLoRATrainer:
         cfg = self.config
         os.makedirs(cfg.checkpoint_dir, exist_ok=True)
 
+        loss_pat = getattr(cfg, "loss_pattern", None) or getattr(cfg, "loss_mode", "pattern")
         if isinstance(dataset, str):
-            ds = SFTDataset(dataset, tok=self.tokenizer, max_len=cfg.max_seq_len)
+            ds = SFTDataset(dataset, tok=self.tokenizer, max_len=cfg.max_seq_len, loss_pattern=loss_pat)
         else:
             ds = dataset
 
-        loader = DataLoader(
-            ds,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            collate_fn=sft_collate_fn,
-            pin_memory=torch.cuda.is_available(),
-        )
+        if getattr(cfg, "use_bucketing", False) and hasattr(ds, "lengths") and len(ds.lengths) > 0:
+            from .data import BucketBatchSampler
+            sampler = BucketBatchSampler(
+                lengths=ds.lengths,
+                batch_size=cfg.batch_size,
+                boundaries=cfg.bucket_boundaries,
+                max_tokens_per_batch=cfg.max_tokens_per_batch,
+                shuffle=True,
+                seed=cfg.seed,
+            )
+            loader = DataLoader(
+                ds,
+                batch_sampler=sampler,
+                collate_fn=sft_collate_fn,
+                pin_memory=torch.cuda.is_available(),
+            )
+        else:
+            loader = DataLoader(
+                ds,
+                batch_size=cfg.batch_size,
+                shuffle=True,
+                collate_fn=sft_collate_fn,
+                pin_memory=torch.cuda.is_available(),
+            )
 
         val_loader = None
         if val_dataset is not None:
             if isinstance(val_dataset, str):
-                v_ds = SFTDataset(val_dataset, tok=self.tokenizer, max_len=cfg.max_seq_len)
+                v_ds = SFTDataset(val_dataset, tok=self.tokenizer, max_len=cfg.max_seq_len, loss_pattern=loss_pat)
             else:
                 v_ds = val_dataset
             val_loader = DataLoader(v_ds, batch_size=cfg.batch_size, shuffle=False, collate_fn=sft_collate_fn)
@@ -276,6 +295,8 @@ class FERNLoRATrainer:
 
         self.model.train()
         for ep in range(epochs):
+            if hasattr(loader.batch_sampler, "set_epoch"):
+                loader.batch_sampler.set_epoch(ep)
             for it, (x, y) in enumerate(loader):
                 if control.emergency_exit or control.request_stop:
                     print(f"[Control] Stopping training at step {step}.", flush=True)
