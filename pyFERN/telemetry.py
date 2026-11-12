@@ -17,6 +17,7 @@ class TrainingControl:
         self.request_val: bool = False
         self.request_save: bool = False
         self.request_stop: bool = False
+        self.request_shutdown: bool = False
         self.override_lr: Optional[float] = None
         self.emergency_exit: bool = False
 
@@ -250,6 +251,11 @@ class TelegramMonitor:
             self.control.request_stop = True
             self.send_message("stopping training. saving final checkpoint.")
 
+        elif cmd in ("/shutdown", "/poweroff"):
+            self.control.request_stop = True
+            self.control.request_shutdown = True
+            self.send_message("shutdown requested: saving, uploading to hf, then powering off.")
+
         elif cmd == "/lr":
             parts = text.split()
             if len(parts) > 1:
@@ -270,6 +276,7 @@ class TelegramMonitor:
                 "/val    - trigger validation step\n"
                 "/save   - save and upload checkpoint\n"
                 "/stop   - stop training and save\n"
+                "/shutdown - save, upload and power off machine\n"
                 "/lr <x> - set learning rate"
             )
             self.send_message(help_text)
