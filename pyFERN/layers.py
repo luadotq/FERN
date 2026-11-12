@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 def rms_norm(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    if hasattr(F, "rms_norm"):
+        return F.rms_norm(x, (x.shape[-1],), eps=eps)
     return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + eps)
 
 class RMSNorm(nn.Module):

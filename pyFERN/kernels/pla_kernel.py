@@ -13,11 +13,10 @@ def pla_step(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     dt = r.dtype
     w, k, v, a, kk, s = w.to(dt), k.to(dt), v.to(dt), a.to(dt), kk.to(dt), s.to(dt)
-    h, n = r.shape[0], r.shape[1]
-    sa = s @ (-kk).view(h, n, 1)
-    e = v.view(h, n, 1) @ k.view(h, 1, n) + sa @ (kk * a).view(h, 1, n)
-    s_new = s * w.view(h, 1, n) + e
-    out = (s_new @ r.view(h, n, 1)).view(h * n)
+    sa = torch.bmm(s, (-kk).unsqueeze(-1))
+    e = torch.baddbmm(torch.bmm(v.unsqueeze(-1), k.unsqueeze(1)), sa, (kk * a).unsqueeze(1))
+    s_new = s * w.unsqueeze(1) + e
+    out = torch.bmm(s_new, r.unsqueeze(-1)).squeeze(-1).flatten()
     return out, s_new
 
 

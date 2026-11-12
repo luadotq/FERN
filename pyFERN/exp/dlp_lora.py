@@ -17,8 +17,12 @@ class DLPLoRATrainer:
         v, d, nl = cfg.vocab_size, cfg.d_model, cfg.num_layers
         dev = next(model.parameters()).device
         
-        self.heads = [torch.randn(v, d, device=dev) * 0.02 for _ in range(nl)]
-        self.mom_h = [torch.zeros_like(hd) for hd in self.heads]
+        # Use shared projection head
+        if hasattr(model, "decoder") and hasattr(model.decoder, "weight"):
+            self.head = model.decoder.weight.detach().clone().to(dev)
+        else:
+            self.head = torch.randn(v, d, device=dev) * 0.02
+        self.mom_h = torch.zeros_like(self.head)
         
         # Momentum buffers for LoRA adapters & forward hooks for exact runtime inputs
         self.moms: Dict[str, torch.Tensor] = {}
@@ -102,7 +106,7 @@ class DLPLoRATrainer:
                 h_next = h_mid + mlp_out
                 
                 h_flat = h_next.reshape(bt, d)
-                logits = h_flat @ self.heads[i].t()
+                logits = h_flat @ self.head.t()
                 
                 if i == len(self.m.blocks) - 1:
                     last_l = F.cross_entropy(logits[val_idx], y_val).item()
@@ -111,17 +115,17 @@ class DLPLoRATrainer:
                 prob_val = prob[val_idx]
                 h_val = h_flat[val_idx]
                 
-                prob_h = prob_val @ self.heads[i]
+                prob_h = prob_val @ self.head
                 delta = torch.zeros_like(h_flat)
-                delta[val_idx] = self.heads[i][y_val] - prob_h
+                delta[val_idx] = self.head[y_val] - prob_h
                 delta = F.rms_norm(delta, (d,), eps=1e-5)
                 
                 gh = - (prob_val.t() @ h_val)
                 gh.index_add_(0, y_val, h_val)
                 gh = gh / n_val
                 ngh = gh / (torch.norm(gh) + 1e-6)
-                self.mom_h[i] = self.beta * self.mom_h[i] + (1.0 - self.beta) * ngh
-                self.heads[i] += lr * self.mom_h[i] * (v * d)**0.5 * 0.05
+                self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
+                self.head += lr * self.mom_h * (v * d)**0.5 * 0.05
                 
                 k_out = f"blocks.{i}.vla.w_out"
                 if k_out in self.inps and isinstance(b.vla.w_out, LoRALinear):
@@ -153,7 +157,7 @@ class DLPLoRATrainer:
                 h_next, vf = res[0], res[2]
                 
                 h_flat = F.rms_norm(h_next, (d,), eps=1e-5).reshape(bt, d)
-                logits = h_flat @ self.heads[i].t()
+                logits = h_flat @ self.head.t()
                 
                 if i == len(self.m.blocks) - 1:
                     last_l = F.cross_entropy(logits[val_idx], y_val).item()
@@ -163,17 +167,17 @@ class DLPLoRATrainer:
                 h_val = h_flat[val_idx]
                 
                 # O(1) error projection without dense one-hot
-                prob_h = prob_val @ self.heads[i]
+                prob_h = prob_val @ self.head
                 delta = torch.zeros_like(h_flat)
-                delta[val_idx] = self.heads[i][y_val] - prob_h
+                delta[val_idx] = self.head[y_val] - prob_h
                 delta = F.rms_norm(delta, (d,), eps=1e-5)
                 
                 gh = - (prob_val.t() @ h_val)
                 gh.index_add_(0, y_val, h_val)
                 gh = gh / n_val
                 ngh = gh / (torch.norm(gh) + 1e-6)
-                self.mom_h[i] = self.beta * self.mom_h[i] + (1.0 - self.beta) * ngh
-                self.heads[i] += lr * self.mom_h[i] * (v * d)**0.5 * 0.05
+                self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
+                self.head += lr * self.mom_h * (v * d)**0.5 * 0.05
                 
                 # Direct projection updates with exact runtime activations
                 k_out = f"blocks.{i}.vla.w_out"

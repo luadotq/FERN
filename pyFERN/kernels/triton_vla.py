@@ -126,12 +126,11 @@ def chunkwise_vla(
     decay_q = ((gammas.view(1, h, 1, 1, 1) ** (steps + 1).view(1, 1, 1, C, 1)) * scale).to(dtype)
     q_decayed = q_c * decay_q
 
-    states = []
+    states = torch.empty(b, h, nc, d, d, device=device, dtype=dtype)
     curr_state = torch.zeros(b, h, 1, d, d, device=device, dtype=dtype)
     for i in range(nc):
-        states.append(curr_state)
+        states[:, :, i : i + 1] = curr_state
         curr_state = curr_state * decay_chunk + kv_chunk[:, :, i : i + 1]
-    states = torch.cat(states, dim=2)
 
     o_inter = torch.matmul(q_decayed, states)
     out = (o_intra + o_inter).view(b, h, s_p, d)
