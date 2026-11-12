@@ -83,6 +83,7 @@ class DLPLoRATrainer:
 
     def _step_vla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
         last_l = 0.0
+        tot_fe = 0.0
         lr = self.lr
         y_flat = y.reshape(-1)
         mask = (y_flat != -100)
@@ -96,7 +97,8 @@ class DLPLoRATrainer:
             h = self.m.encoder(x)
             for i, b in enumerate(self.m.blocks):
                 norm_x = F.rms_norm(h, (d,), eps=1e-5)
-                vla_out, _ = b.vla.forward_parallel(norm_x)
+                vla_out, fe_l = b.vla.forward_parallel(norm_x)
+                tot_fe += float(fe_l)
                 h_mid = h + vla_out
                 norm_h = F.rms_norm(h_mid, (d,), eps=1e-5)
                 
@@ -120,12 +122,14 @@ class DLPLoRATrainer:
                 delta[val_idx] = self.head[y_val] - prob_h
                 delta = F.rms_norm(delta, (d,), eps=1e-5)
                 
-                gh = - (prob_val.t() @ h_val)
-                gh.index_add_(0, y_val, h_val)
-                gh = gh / n_val
-                ngh = gh / (torch.norm(gh) + 1e-6)
-                self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
-                self.head += lr * self.mom_h * (v * d)**0.5 * 0.05
+                # Single stabilized head step per block
+                if i == len(self.m.blocks) - 1:
+                    gh = - (prob_val.t() @ h_val)
+                    gh.index_add_(0, y_val, h_val)
+                    gh = gh / n_val
+                    ngh = gh / (torch.norm(gh) + 1e-6)
+                    self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
+                    self.head += lr * self.mom_h * 0.02
                 
                 k_out = f"blocks.{i}.vla.w_out"
                 if k_out in self.inps and isinstance(b.vla.w_out, LoRALinear):
@@ -136,10 +140,11 @@ class DLPLoRATrainer:
                     self._upd_lora(b.w_down, self.inps[k_down].reshape(bt, -1), delta, k_down, lr)
                 
                 h = h_next
-        return last_l, last_l, 0.0
+        return last_l, last_l, tot_fe / len(self.m.blocks)
 
     def _step_pla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
         last_l = 0.0
+        tot_fe = 0.0
         lr = self.lr
         y_flat = y.reshape(-1)
         mask = (y_flat != -100)
@@ -154,7 +159,8 @@ class DLPLoRATrainer:
             vf = None
             for i, b in enumerate(self.m.blocks):
                 res = b.forward_parallel(h, vf)
-                h_next, vf = res[0], res[2]
+                h_next, fe_l, vf = res[0], res[1], res[2]
+                tot_fe += float(fe_l)
                 
                 h_flat = F.rms_norm(h_next, (d,), eps=1e-5).reshape(bt, d)
                 logits = h_flat @ self.head.t()
@@ -172,12 +178,13 @@ class DLPLoRATrainer:
                 delta[val_idx] = self.head[y_val] - prob_h
                 delta = F.rms_norm(delta, (d,), eps=1e-5)
                 
-                gh = - (prob_val.t() @ h_val)
-                gh.index_add_(0, y_val, h_val)
-                gh = gh / n_val
-                ngh = gh / (torch.norm(gh) + 1e-6)
-                self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
-                self.head += lr * self.mom_h * (v * d)**0.5 * 0.05
+                if i == len(self.m.blocks) - 1:
+                    gh = - (prob_val.t() @ h_val)
+                    gh.index_add_(0, y_val, h_val)
+                    gh = gh / n_val
+                    ngh = gh / (torch.norm(gh) + 1e-6)
+                    self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
+                    self.head += lr * self.mom_h * 0.02
                 
                 # Direct projection updates with exact runtime activations
                 k_out = f"blocks.{i}.vla.w_out"
@@ -189,4 +196,4 @@ class DLPLoRATrainer:
                     self._upd_lora(b.w_down, self.inps[k_down].reshape(bt, -1), delta, k_down, lr * 0.1)
                     
                 h = h_next
-        return last_l, last_l, 0.0
+        return last_l, last_l, tot_fe / len(self.m.blocks)
