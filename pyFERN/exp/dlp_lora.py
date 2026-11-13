@@ -17,12 +17,11 @@ class DLPLoRATrainer:
         v, d, nl = cfg.vocab_size, cfg.d_model, cfg.num_layers
         dev = next(model.parameters()).device
         
-        # Use shared projection head
+        # Frozen projection head matching model.decoder.weight
         if hasattr(model, "decoder") and hasattr(model.decoder, "weight"):
-            self.head = model.decoder.weight.detach().clone().to(dev)
+            self.head = model.decoder.weight.detach()
         else:
             self.head = torch.randn(v, d, device=dev) * 0.02
-        self.mom_h = torch.zeros_like(self.head)
         
         # Momentum buffers for LoRA adapters & forward hooks for exact runtime inputs
         self.moms: Dict[str, torch.Tensor] = {}
@@ -59,32 +58,45 @@ class DLPLoRATrainer:
         layer.lora_a.data.add_(lr * ma * (layer.lora_a.numel()**0.5) * 0.02)
 
     def train_step(self, x: torch.Tensor, y: torch.Tensor, win_size: Optional[int] = None) -> Tuple[float, float, float]:
+        if x.shape[1] < 2:
+            return 0.0, 0.0, 0.0
+        x, y = x[:, :-1], y[:, 1:]
+
         if win_size and x.shape[1] > win_size:
-            tot_l, tot_ce = 0.0, 0.0
-            steps = 0
+            chunks = []
             for start in range(0, x.shape[1], win_size):
                 end = min(x.shape[1], start + win_size)
                 xw, yw = x[:, start:end], y[:, start:end]
-                l, ce, fe = self._train_chunk(xw, yw)
-                tot_l += l
-                tot_ce += ce
-                steps += 1
-            return tot_l / max(1, steps), tot_ce / max(1, steps), 0.0
+                nv = int((yw != -100).sum().item())
+                if nv > 0:
+                    chunks.append((xw, yw, nv))
+            if not chunks:
+                return 0.0, 0.0, 0.0
+
+            lr_scale = 1.0 / max(1.0, len(chunks) ** 0.5)
+            tot_l, tot_ce, tot_fe, n_toks = 0.0, 0.0, 0.0, 0
+            for xw, yw, nv in chunks:
+                l, ce, fe = self._train_chunk(xw, yw, lr_scale=lr_scale)
+                tot_l += l * nv
+                tot_ce += ce * nv
+                tot_fe += fe * nv
+                n_toks += nv
+            return tot_l / n_toks, tot_ce / n_toks, tot_fe / n_toks
         return self._train_chunk(x, y)
 
-    def _train_chunk(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[float, float, float]:
+    def _train_chunk(self, x: torch.Tensor, y: torch.Tensor, lr_scale: float = 1.0) -> Tuple[float, float, float]:
         bt = x.numel()
         v = self.m.config.vocab_size
         d = self.m.config.d_model
         
         if self.is_pla:
-            return self._step_pla(x, y, bt, v, d)
-        return self._step_vla(x, y, bt, v, d)
+            return self._step_pla(x, y, bt, v, d, lr_scale=lr_scale)
+        return self._step_vla(x, y, bt, v, d, lr_scale=lr_scale)
 
-    def _step_vla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
+    def _step_vla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int, lr_scale: float = 1.0) -> Tuple[float, float, float]:
         last_l = 0.0
         tot_fe = 0.0
-        lr = self.lr
+        lr = self.lr * lr_scale
         y_flat = y.reshape(-1)
         mask = (y_flat != -100)
         n_val = int(mask.sum().item())
@@ -122,15 +134,6 @@ class DLPLoRATrainer:
                 delta[val_idx] = self.head[y_val] - prob_h
                 delta = F.rms_norm(delta, (d,), eps=1e-5)
                 
-                # Single stabilized head step per block
-                if i == len(self.m.blocks) - 1:
-                    gh = - (prob_val.t() @ h_val)
-                    gh.index_add_(0, y_val, h_val)
-                    gh = gh / n_val
-                    ngh = gh / (torch.norm(gh) + 1e-6)
-                    self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
-                    self.head += lr * self.mom_h * 0.02
-                
                 k_out = f"blocks.{i}.vla.w_out"
                 if k_out in self.inps and isinstance(b.vla.w_out, LoRALinear):
                     self._upd_lora(b.vla.w_out, self.inps[k_out].reshape(bt, -1), delta, k_out, lr)
@@ -142,10 +145,10 @@ class DLPLoRATrainer:
                 h = h_next
         return last_l, last_l, tot_fe / len(self.m.blocks)
 
-    def _step_pla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int) -> Tuple[float, float, float]:
+    def _step_pla(self, x: torch.Tensor, y: torch.Tensor, bt: int, v: int, d: int, lr_scale: float = 1.0) -> Tuple[float, float, float]:
         last_l = 0.0
         tot_fe = 0.0
-        lr = self.lr
+        lr = self.lr * lr_scale
         y_flat = y.reshape(-1)
         mask = (y_flat != -100)
         n_val = int(mask.sum().item())
@@ -177,14 +180,6 @@ class DLPLoRATrainer:
                 delta = torch.zeros_like(h_flat)
                 delta[val_idx] = self.head[y_val] - prob_h
                 delta = F.rms_norm(delta, (d,), eps=1e-5)
-                
-                if i == len(self.m.blocks) - 1:
-                    gh = - (prob_val.t() @ h_val)
-                    gh.index_add_(0, y_val, h_val)
-                    gh = gh / n_val
-                    ngh = gh / (torch.norm(gh) + 1e-6)
-                    self.mom_h = self.beta * self.mom_h + (1.0 - self.beta) * ngh
-                    self.head += lr * self.mom_h * 0.02
                 
                 # Direct projection updates with exact runtime activations
                 k_out = f"blocks.{i}.vla.w_out"
