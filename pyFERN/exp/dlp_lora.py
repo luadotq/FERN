@@ -165,7 +165,8 @@ class DLPLoRATrainer:
                 h_next, fe_l, vf = res[0], res[1], res[2]
                 tot_fe += float(fe_l)
                 
-                h_flat = F.rms_norm(h_next, (d,), eps=1e-5).reshape(bt, d)
+                h_norm = self.m.ln_out(h_next) if hasattr(self.m, "ln_out") else F.rms_norm(h_next, (d,), eps=1e-5)
+                h_flat = h_norm.reshape(bt, d)
                 logits = h_flat @ self.head.t()
                 
                 if i == len(self.m.blocks) - 1:
