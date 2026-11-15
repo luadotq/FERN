@@ -244,7 +244,7 @@ class FERNModel(nn.Module):
         n_el = sum(self.config.d_layers) * 2 + self.config.d_mem + h * d * d
         return n_el * batch_size * b_bytes
 
-    def forward_parallel(self, tokens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_parallel(self, tokens: torch.Tensor, return_hidden: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         eps = self.config.rms_eps
         if self.is_deep:
             h = self.encoder(tokens)
@@ -271,6 +271,8 @@ class FERNModel(nn.Module):
                 h = self.ln_out(h)
             else:
                 h = rms_norm(h, eps)
+            if return_hidden:
+                return h, avg_fe
             logits = self.decoder(h)
             return logits, avg_fe
 
@@ -387,11 +389,12 @@ class FERNModel(nn.Module):
         tokens: torch.Tensor,
         targets: Optional[torch.Tensor] = None,
         fe_weight: Optional[float] = None,
+        return_hidden: bool = False,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
         if fe_weight is None:
             fe_weight = self.config.fe_weight
 
-        logits, avg_fe = self.forward_parallel(tokens)
+        logits, avg_fe = self.forward_parallel(tokens, return_hidden=return_hidden)
 
         if targets is not None:
             ce_loss = F.cross_entropy(logits.view(-1, self.config.vocab_size), targets.view(-1))
