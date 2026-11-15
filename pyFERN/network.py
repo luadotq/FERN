@@ -59,18 +59,26 @@ class FERNBlock(nn.Module):
         nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
         nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
 
-    def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None):
+    def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None, state: Optional[Tuple] = None, return_state: bool = False):
         if self.is_pla:
             xx1 = self.ln1(x)
-            vla_out, fe_vla, v_first = self.vla.forward_parallel(xx1, v_first)
+            att_st = state[:2] if state is not None else None
+            ffn_prev = state[2] if state is not None else None
+            if return_state:
+                vla_out, fe_vla, v_first, (xa_last, s_new) = self.vla.forward_parallel(xx1, v_first, state=att_st, return_state=True)
+            else:
+                vla_out, fe_vla, v_first = self.vla.forward_parallel(xx1, v_first, state=att_st)
             h = x + vla_out
 
             xx2 = self.ln2(h)
-            dx = torch.cat([torch.zeros_like(xx2[:, :1]), xx2[:, :-1] - xx2[:, 1:]], dim=1)
+            dx0 = (ffn_prev - xx2[:, :1]) if ffn_prev is not None else torch.zeros_like(xx2[:, :1])
+            dx = torch.cat([dx0, xx2[:, :-1] - xx2[:, 1:]], dim=1)
             k = xx2 + dx * self.x_k
             mlp_out = self.w_down(torch.relu(self.w_up(k)) ** 2)
             out = h + mlp_out
             fe_pc = ((xx2 - self.ln2(out)) ** 2).mean()
+            if return_state:
+                return out, fe_vla + fe_pc, v_first, (xa_last, s_new, xx2[:, -1:].detach())
             return out, fe_vla + fe_pc, v_first
         else:
             norm_x = rms_norm(x, self.rms_eps)

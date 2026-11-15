@@ -74,10 +74,12 @@ class PredictiveLinearAttention(nn.Module):
         fe_pla = ((v.view(h * n) - normed) ** 2).mean()
         return self.w_out((normed + bonus) * g), x, state, v_first, fe_pla
 
-    def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, float, Optional[torch.Tensor]]:
+    def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None, state: Optional[Tuple] = None, return_state: bool = False):
         b, t, d = x.shape
         h, n = self.h, self.n
-        dx = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1] - x[:, 1:]], dim=1)
+        x_prev, s_att = state if state is not None else (None, None)
+        dx0 = (x_prev - x[:, :1]) if x_prev is not None else torch.zeros_like(x[:, :1])
+        dx = torch.cat([dx0, x[:, :-1] - x[:, 1:]], dim=1)
         xr = x + dx * self.x_r
         xw = x + dx * self.x_w
         xk = x + dx * self.x_k
@@ -105,9 +107,11 @@ class PredictiveLinearAttention(nn.Module):
             v = v + (v_first - v) * torch.sigmoid(self.v0 + (xv @ self.v1) @ self.v2)
         v = v.view(b, t, h, n)
 
-        raw, _ = chunkwise_pla(r, w, k, v, a, kk, chunk_size=64, with_bonus=False)
+        raw, new_s = chunkwise_pla(r, w, k, v, a, kk, s=s_att, chunk_size=64, with_bonus=False)
         normed = F.group_norm(raw.view(b * t, h * n), num_groups=h, weight=self.ln_x.weight.to(dtype=raw.dtype), bias=self.ln_x.bias.to(dtype=raw.dtype) if self.ln_x.bias is not None else None, eps=64e-5).view(b, t, h * n)
         bonus = ((r * k * self.r_k.view(h, n)).sum(dim=-1, keepdim=True) * v).view(b, t, h * n)
         out = self.w_out((normed + bonus) * g)
         fe_pla = ((v.view(b, t, h * n) - normed) ** 2).mean()
+        if return_state:
+            return out, fe_pla, v_first, (x[:, -1:].detach(), new_s.detach())
         return out, fe_pla, v_first
