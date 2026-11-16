@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from .config import ModelConfig
 from .layers import HierarchicalLayer, rms_norm
 from .vla import VectorLinearAttention
+from .gvla import GammaVectorLinearAttention
 from .pla import PredictiveLinearAttention
 from .pe import sinusoidal_pe, apply_rope
 
@@ -27,9 +28,11 @@ class FERNBlock(nn.Module):
         self.layer_id = layer_id
         self.d_model = d_model
         self.rms_eps = config.rms_eps
-        self.is_pla = getattr(config, "attn_type", "vla") == "pla"
+        attn_type = getattr(config, "attn_type", "vla")
+        self.is_pla = attn_type == "pla"
+        self.is_gvla = attn_type == "gvla"
         head_dim = getattr(config, "head_dim", None) or (d_model // num_heads)
-        mlp_dim = getattr(config, "mlp_dim", None) or int(d_model * 2.5)
+        mlp_dim = config.mlp_dim if config.mlp_dim is not None else int(d_model * 2.5)
 
         if self.is_pla:
             self.ln1 = nn.LayerNorm(d_model)
@@ -39,25 +42,46 @@ class FERNBlock(nn.Module):
             self.w_up = nn.Linear(d_model, mlp_dim, bias=False)
             self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
         else:
-            self.vla = VectorLinearAttention(
-                in_dim=d_model,
-                mem_dim=d_model,
-                num_heads=num_heads,
-                rms_eps=config.rms_eps,
-                gamma_min=config.gamma_min,
-                gamma_max=config.gamma_max,
-                chunk_size=getattr(config, "chunk_size", 64),
-            )
-            use_bias = getattr(config, "mlp_bias", False)
-            self.w_up = nn.Linear(d_model, mlp_dim, bias=use_bias)
-            act_name = getattr(config, "act", "gelu")
-            self.act = (lambda x: torch.relu(x) ** 2) if act_name == "squared_relu" else nn.GELU()
-            self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
+            if self.is_gvla:
+                mem_dim = getattr(config, "d_mem", None) or d_model
+                self.ln1_w = nn.Parameter(torch.ones(d_model))
+                self.vla = GammaVectorLinearAttention(
+                    in_dim=d_model,
+                    mem_dim=mem_dim,
+                    num_heads=num_heads,
+                    rms_eps=config.rms_eps,
+                    chunk_size=getattr(config, "chunk_size", 64),
+                    conv_kernel=getattr(config, "conv_kernel", 4),
+                    d_state=getattr(config, "d_state", None),
+                    ngroups=getattr(config, "ngroups", 1),
+                    qk_norm=getattr(config, "qk_norm", False),
+                    scale=1.0,
+                )
+            else:
+                self.vla = VectorLinearAttention(
+                    in_dim=d_model,
+                    mem_dim=d_model,
+                    num_heads=num_heads,
+                    rms_eps=config.rms_eps,
+                    gamma_min=config.gamma_min,
+                    gamma_max=config.gamma_max,
+                    chunk_size=getattr(config, "chunk_size", 64),
+                )
+            if mlp_dim > 0:
+                use_bias = getattr(config, "mlp_bias", False)
+                self.w_up = nn.Linear(d_model, mlp_dim, bias=use_bias)
+                act_name = getattr(config, "act", "gelu")
+                self.act = (lambda x: torch.relu(x) ** 2) if act_name == "squared_relu" else nn.GELU()
+                self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
+            else:
+                self.w_up = None
+                self.w_down = None
         self._init_weights(config.init_range)
 
     def _init_weights(self, r: float):
-        nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
-        nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
+        if self.w_up is not None:
+            nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
+            nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
 
     def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None, state: Optional[Tuple] = None, return_state: bool = False):
         if self.is_pla:
@@ -82,16 +106,29 @@ class FERNBlock(nn.Module):
             return out, fe_vla + fe_pc, v_first
         else:
             norm_x = rms_norm(x, self.rms_eps)
-            vla_out, fe_vla = self.vla.forward_parallel(norm_x)
+            if self.is_gvla:
+                norm_x = norm_x * self.ln1_w.to(norm_x.dtype)
+            new_st = None
+            if self.is_gvla and return_state:
+                vla_out, fe_vla, new_st = self.vla.forward_parallel(norm_x, state=state, return_state=True)
+            elif self.is_gvla:
+                vla_out, fe_vla = self.vla.forward_parallel(norm_x, state=state)
+            else:
+                vla_out, fe_vla = self.vla.forward_parallel(norm_x)
             h = x + vla_out
 
-            norm_h = rms_norm(h, self.rms_eps)
-            mlp_out = self.w_down(self.act(self.w_up(norm_h)))
-            out = h + mlp_out
+            if self.w_up is not None:
+                norm_h = rms_norm(h, self.rms_eps)
+                mlp_out = self.w_down(self.act(self.w_up(norm_h)))
+                out = h + mlp_out
+                p_err = norm_h - rms_norm(out, self.rms_eps)
+                fe_pc = (p_err ** 2).mean()
+            else:
+                out = h
+                fe_pc = torch.zeros((), device=x.device, dtype=x.dtype)
 
-            p_err = norm_h - rms_norm(out, self.rms_eps)
-            fe_pc = (p_err ** 2).mean()
-
+            if return_state:
+                return out, fe_vla + fe_pc, new_st
             return out, fe_vla + fe_pc
 
     def forward_step(self, x: torch.Tensor, state, v_first: Optional[torch.Tensor] = None):
@@ -120,15 +157,20 @@ class FERNBlock(nn.Module):
             return out, state, v_first, fe_vla + fe_pc
         else:
             norm_x = rms_norm(x, self.rms_eps)
+            if self.is_gvla:
+                norm_x = norm_x * self.ln1_w.to(norm_x.dtype)
             vla_out, new_s_vla, fe_vla = self.vla.forward_step(norm_x, state)
             h = x + vla_out
 
-            norm_h = rms_norm(h, self.rms_eps)
-            mlp_out = self.w_down(self.act(self.w_up(norm_h)))
-            out = h + mlp_out
-
-            p_err = norm_h - rms_norm(out, self.rms_eps)
-            fe_pc = (p_err ** 2).mean()
+            if self.w_up is not None:
+                norm_h = rms_norm(h, self.rms_eps)
+                mlp_out = self.w_down(self.act(self.w_up(norm_h)))
+                out = h + mlp_out
+                p_err = norm_h - rms_norm(out, self.rms_eps)
+                fe_pc = (p_err ** 2).mean()
+            else:
+                out = h
+                fe_pc = torch.zeros((), device=x.device, dtype=x.dtype)
 
             return out, new_s_vla, fe_vla + fe_pc
 
@@ -153,6 +195,8 @@ class FERNModel(nn.Module):
             ])
             if getattr(config, "attn_type", "vla") == "pla":
                 self.ln_out = nn.LayerNorm(self.d_model, eps=config.rms_eps)
+            elif getattr(config, "attn_type", "vla") == "gvla":
+                self.ln_out_w = nn.Parameter(torch.ones(self.d_model))
             has_bias = getattr(config, "decoder_bias", False)
             self.decoder = nn.Linear(self.d_model, config.vocab_size, bias=has_bias)
             if getattr(config, "tied_embeddings", True):
@@ -214,6 +258,8 @@ class FERNModel(nn.Module):
                     for _ in range(self.num_layers)
                 ]
                 return NetworkState(pla_state=pla_st, delay_step=0)
+            if getattr(self.config, "attn_type", "vla") == "gvla":
+                return NetworkState(s_vla_layers=[None] * self.num_layers, delay_step=0)
             h, d = self.num_heads, self.head_dim
             s_vla_layers = [
                 torch.zeros((batch_size, h, d, d), device=device)
@@ -244,14 +290,22 @@ class FERNModel(nn.Module):
         n_el = sum(self.config.d_layers) * 2 + self.config.d_mem + h * d * d
         return n_el * batch_size * b_bytes
 
-    def forward_parallel(self, tokens: torch.Tensor, return_hidden: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward_parallel(
+        self,
+        tokens: torch.Tensor,
+        return_hidden: bool = False,
+        return_state: bool = False,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, NetworkState]]:
         eps = self.config.rms_eps
         if self.is_deep:
             h = self.encoder(tokens)
             total_fe = torch.zeros((), device=tokens.device, dtype=h.dtype)
             use_ckpt = self.training and getattr(self.config, "gradient_checkpointing", False)
             v_first = None
-            is_pla = getattr(self.config, "attn_type", "vla") == "pla"
+            attn_type = getattr(self.config, "attn_type", "vla")
+            is_pla = attn_type == "pla"
+            is_gvla = attn_type == "gvla"
+            gvla_states = [] if (is_gvla and return_state) else None
 
             for block in self.blocks:
                 if use_ckpt:
@@ -263,17 +317,26 @@ class FERNModel(nn.Module):
                 else:
                     if block.is_pla:
                         h, fe_l, v_first = block.forward_parallel(h, v_first)
+                    elif is_gvla and return_state:
+                        h, fe_l, st_l = block.forward_parallel(h, return_state=True)
+                        gvla_states.append(st_l)
                     else:
                         h, fe_l = block.forward_parallel(h)
                 total_fe = total_fe + fe_l
             avg_fe = total_fe / len(self.blocks)
             if is_pla:
                 h = self.ln_out(h)
+            elif is_gvla:
+                h = rms_norm(h, eps) * self.ln_out_w.to(h.dtype)
             else:
                 h = rms_norm(h, eps)
             if return_hidden:
+                if return_state and is_gvla:
+                    return h, avg_fe, NetworkState(s_vla_layers=gvla_states, delay_step=0)
                 return h, avg_fe
             logits = self.decoder(h)
+            if return_state and is_gvla:
+                return logits, avg_fe, NetworkState(s_vla_layers=gvla_states, delay_step=0)
             return logits, avg_fe
 
         embeddings = self.encoder(tokens)
@@ -348,7 +411,10 @@ class FERNModel(nn.Module):
 
             state.s_vla_layers = new_s_layers
             state.s_vla = new_s_layers[-1]
-            logits = self.decoder(rms_norm(h, eps)).unsqueeze(1)
+            h_out = rms_norm(h, eps)
+            if getattr(self.config, "attn_type", "vla") == "gvla":
+                h_out = h_out * self.ln_out_w.to(h_out.dtype)
+            logits = self.decoder(h_out).unsqueeze(1)
             return logits, state
 
         d_0 = self.config.d_layers[0]
@@ -418,13 +484,17 @@ class FERNModel(nn.Module):
         eos_id = eos_token_id if eos_token_id is not None else self.config.eos_token_id
 
         prompt_tensor = torch.tensor([prompt_tokens], dtype=torch.long, device=device)
-        for t in range(prompt_tensor.shape[1]):
-            tok_t = prompt_tensor[:, t:t + 1]
-            logits, state = self.forward_step(tok_t, state)
+        if self.is_deep and getattr(self.config, "attn_type", "vla") == "gvla":
+            h_seq, _, state = self.forward_parallel(prompt_tensor, return_hidden=True, return_state=True)
+            curr_logits = self.decoder(h_seq[:, -1, :])
+        else:
+            for t in range(prompt_tensor.shape[1]):
+                tok_t = prompt_tensor[:, t:t + 1]
+                logits, state = self.forward_step(tok_t, state)
+            curr_logits = logits.squeeze(1)
 
         generated = []
         history = list(prompt_tokens)
-        curr_logits = logits.squeeze(1)
 
         for _ in range(max_tokens):
             logits_step = curr_logits[0].clone()

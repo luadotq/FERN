@@ -36,6 +36,10 @@ class ModelConfig:
 
     # Chunkwise Attention & Scaling
     chunk_size: int = 64
+    conv_kernel: int = 4
+    d_state: Optional[int] = None
+    ngroups: int = 1
+    qk_norm: bool = True
     gradient_checkpointing: bool = False
 
     # Special token IDs

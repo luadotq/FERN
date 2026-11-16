@@ -111,19 +111,27 @@ class DLPLoRATrainer:
 
         with torch.no_grad():
             h = self.m.encoder(x)
+            is_gvla = getattr(self.m.config, "attn_type", "vla") == "gvla"
+            ln_out_w = getattr(self.m, "ln_out_w", None)
             for i, b in enumerate(self.m.blocks):
                 norm_x = F.rms_norm(h, (d,), eps=1e-5)
+                if is_gvla and hasattr(b, "ln1_w"):
+                    norm_x = norm_x * b.ln1_w.to(norm_x.dtype)
                 vla_out, fe_l = b.vla.forward_parallel(norm_x)
                 tot_fe += float(fe_l)
                 h_mid = h + vla_out
-                norm_h = F.rms_norm(h_mid, (d,), eps=1e-5)
 
-                mlp_in = b.w_up(norm_h)
-                mlp_act = b.act(mlp_in)
-                mlp_out = b.w_down(mlp_act)
-                h_next = h_mid + mlp_out
+                if getattr(b, "w_up", None) is not None:
+                    norm_h = F.rms_norm(h_mid, (d,), eps=1e-5)
+                    mlp_in = b.w_up(norm_h)
+                    mlp_act = b.act(mlp_in)
+                    mlp_out = b.w_down(mlp_act)
+                    h_next = h_mid + mlp_out
+                else:
+                    h_next = h_mid
 
-                h_flat = h_next.reshape(bt, d)
+                h_proj = F.rms_norm(h_next, (d,), eps=1e-5) * ln_out_w.to(h_next.dtype) if ln_out_w is not None else h_next
+                h_flat = h_proj.reshape(bt, d)
                 logits = h_flat @ self.head.t()
 
                 if i == len(self.m.blocks) - 1:
