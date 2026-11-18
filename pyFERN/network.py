@@ -69,19 +69,33 @@ class FERNBlock(nn.Module):
                 )
             if mlp_dim > 0:
                 use_bias = getattr(config, "mlp_bias", False)
-                self.w_up = nn.Linear(d_model, mlp_dim, bias=use_bias)
                 act_name = getattr(config, "act", "gelu")
-                self.act = (lambda x: torch.relu(x) ** 2) if act_name == "squared_relu" else nn.GELU()
+                self.ln2_w = nn.Parameter(torch.ones(d_model)) if self.is_gvla else None
+                self.w_gate = nn.Linear(d_model, mlp_dim, bias=use_bias) if act_name == "swiglu" else None
+                self.w_up = nn.Linear(d_model, mlp_dim, bias=use_bias)
+                self.act = F.silu if act_name == "swiglu" else ((lambda x: torch.relu(x) ** 2) if act_name == "squared_relu" else nn.GELU())
                 self.w_down = nn.Linear(mlp_dim, d_model, bias=False)
             else:
+                self.ln2_w = None
+                self.w_gate = None
                 self.w_up = None
                 self.w_down = None
         self._init_weights(config.init_range)
 
     def _init_weights(self, r: float):
         if self.w_up is not None:
+            if getattr(self, "w_gate", None) is not None:
+                nn.init.normal_(self.w_gate.weight, mean=0.0, std=r)
             nn.init.normal_(self.w_up.weight, mean=0.0, std=r)
             nn.init.normal_(self.w_down.weight, mean=0.0, std=r)
+
+    def _mlp(self, h: torch.Tensor):
+        norm_h = rms_norm(h, self.rms_eps)
+        if self.is_gvla and self.ln2_w is not None:
+            norm_h = norm_h * self.ln2_w.to(norm_h.dtype)
+        hid = self.act(self.w_gate(norm_h)) * self.w_up(norm_h) if self.w_gate is not None else self.act(self.w_up(norm_h))
+        out = h + self.w_down(hid)
+        return out, ((norm_h - rms_norm(out, self.rms_eps)) ** 2).mean()
 
     def forward_parallel(self, x: torch.Tensor, v_first: Optional[torch.Tensor] = None, state: Optional[Tuple] = None, return_state: bool = False):
         if self.is_pla:
@@ -118,11 +132,7 @@ class FERNBlock(nn.Module):
             h = x + vla_out
 
             if self.w_up is not None:
-                norm_h = rms_norm(h, self.rms_eps)
-                mlp_out = self.w_down(self.act(self.w_up(norm_h)))
-                out = h + mlp_out
-                p_err = norm_h - rms_norm(out, self.rms_eps)
-                fe_pc = (p_err ** 2).mean()
+                out, fe_pc = self._mlp(h)
             else:
                 out = h
                 fe_pc = torch.zeros((), device=x.device, dtype=x.dtype)
@@ -163,11 +173,7 @@ class FERNBlock(nn.Module):
             h = x + vla_out
 
             if self.w_up is not None:
-                norm_h = rms_norm(h, self.rms_eps)
-                mlp_out = self.w_down(self.act(self.w_up(norm_h)))
-                out = h + mlp_out
-                p_err = norm_h - rms_norm(out, self.rms_eps)
-                fe_pc = (p_err ** 2).mean()
+                out, fe_pc = self._mlp(h)
             else:
                 out = h
                 fe_pc = torch.zeros((), device=x.device, dtype=x.dtype)
